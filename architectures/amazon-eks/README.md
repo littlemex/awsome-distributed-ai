@@ -126,7 +126,7 @@ EFA, whether card 0 does, and the device index used on the other cards
 | `g6e.12xlarge` | 4 | 1 | 1 | no |
 | `g6e.48xlarge` | 8 | 4 | 4 | no |
 | `g5.12xlarge` | 4 | 1 | 1 | no |
-| `g4dn.8xlarge` | 1 | 1 | 1 | no |
+| `g4dn.8xlarge` | 1 | 1 | 1 | yes, 2 nodes, `us-west-2` |
 | `p4d.24xlarge` | 8 | 4 | 4 | no |
 | `p4de.24xlarge` | 8 | 4 | 4 | no |
 | `p5.48xlarge` | 8 | 32 | 32 | no |

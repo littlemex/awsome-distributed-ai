@@ -59,12 +59,24 @@ aws autoscaling describe-scaling-activities --auto-scaling-group-name "$ASG" --m
   --query 'Activities[].[StatusCode,StatusMessage]' --output text
 ```
 
-`InsufficientInstanceCapacity` there names the zones that do have capacity. The zone is fixed when
-the stack is created, and the private subnet is in it, so the fix is a new stack in another zone
-rather than an update. There is no API that reports available capacity before a launch: an
+`InsufficientInstanceCapacity` there names the zones that do have capacity. CloudFormation does
+report it in the end — the node group gives up after about 35 minutes and the stack event carries
+`Issue(Code=AsgInstanceLaunchFailures, Message=Could not launch On-Demand Instances.
+InsufficientInstanceCapacity ...)` — but the Auto Scaling activity says the same thing within two
+minutes, which is the difference between waiting and knowing.
+
+The zone is fixed when the stack is created, and the private subnet is in it, so the fix is a new
+stack in another zone rather than an update. No API reports available capacity before a launch: an
 instance type being *offered* in a zone (`describe-instance-type-offerings`) says nothing about
-whether it can be launched right now, which is the argument for a capacity reservation for anything
-scheduled, and for reading this section before assuming the template is stuck.
+whether it can be launched right now. A capacity reservation is the only thing that answers the
+question in advance, and it answers immediately — `create-capacity-reservation` either succeeds or
+returns `InsufficientInstanceCapacity` in seconds, which makes it a probe as well as a guarantee:
+
+```bash
+aws ec2 create-capacity-reservation --instance-type g7e.12xlarge --instance-platform Linux/UNIX \
+  --availability-zone us-west-2b --instance-count 2 --instance-match-criteria targeted \
+  --end-date-type limited --end-date "$(date -u -v+3H +%Y-%m-%dT%H:%M:%SZ)"
+```
 
 ## 3. Watching the image pre-pull
 

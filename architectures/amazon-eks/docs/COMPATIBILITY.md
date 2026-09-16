@@ -27,13 +27,14 @@ Two of these pins are load-bearing rather than tidy:
   pinned chart's list. For reference, the manifest pinned by
   `examples/inference/vllm/dsv3-uccl-nixl/setup/install-prereqs.sh` is `v0.5.7`, which predates both
   `g7e` and `p6-b300`.
-- **The NVIDIA chart's node-feature-discovery worker tolerates the GPU taint by chart default**, not
-  because the bootstrap asks it to. The bootstrap's `tolerations` value reaches the device plugin,
-  the GPU feature discovery DaemonSet and the MPS control daemon; the worker's toleration comes from
-  the subchart. A chart version that changed that default would leave GPU nodes unlabelled and the
-  plugin unscheduled. The lint renders the chart **with the arguments the template passes it**, which
-  is what makes that check meaningful: `gfd.enabled=true` produces four DaemonSets, so rendering with
-  chart defaults would inspect half of them.
+- **The NVIDIA chart's tolerations reach four DaemonSets, not one.** `gfd.enabled=true` adds GPU
+  feature discovery, the MPS control daemon and a node-feature-discovery subchart, and the lint
+  renders the chart **with the arguments the template passes it** for exactly that reason: rendering
+  with chart defaults inspects half of them. On the cluster that was deployed, the device plugin and
+  GPU feature discovery ran on both GPU nodes, the node-feature-discovery worker scheduled on the two
+  system nodes only, and the GPU nodes still advertised their GPUs — so the worker's toleration is not
+  what makes the labels appear. The check stays because a chart that stopped honouring the
+  `tolerations` value would leave the device plugin itself unschedulable on a tainted node.
 
 ## Left at the EKS default
 
@@ -68,9 +69,15 @@ recording the result in the table below.
 
 ## What a deploy resolved to
 
-| Date | Region | Kubernetes | Instance type | Nodes | AMI release | Add-on versions | Result |
-|---|---|---|---|---|---|---|---|
-| _to be filled by the first `gpu-efa-test.md` run_ | | | | | | | |
+| Date | Region | Kubernetes | Instance type | Nodes | AMI release | Result |
+|---|---|---|---|---|---|---|
+| 2026-09-16 | `us-west-2` (zone b) | 1.36 | `g4dn.8xlarge` | 2 | `1.36.3-20260911` | Both nodes `Ready`, each advertising `nvidia.com/gpu: 1` and `vpc.amazonaws.com/efa: 1`; `nvidia-smi` from a pod holding a GPU reports `Tesla T4, 580.178.04`; local NVMe assembled as `/dev/md127` (`raid0`, 838 GiB) at `/mnt/k8s-disks/0` |
+| 2026-09-16 | `us-west-2` (zones a, b) | 1.36 | `g7e.12xlarge` | 2 | — | Not launched. `InsufficientInstanceCapacity` in both zones, and a capacity reservation for two instances was refused in every zone of `us-west-2`, `us-east-1` and `us-east-2` |
 
-Filling this table is part of that test, not an afterthought: it is the only record that ties a
-working cluster to the versions that produced it.
+Add-on versions the 1.36 cluster resolved to: `vpc-cni v1.22.4-eksbuild.3`,
+`kube-proxy v1.36.0-eksbuild.21`, `coredns v1.14.3-eksbuild.16`,
+`eks-pod-identity-agent v1.3.10-eksbuild.3`.
+
+Filling this table is part of the test, not an afterthought: it is the only record that ties a working
+cluster to the versions that produced it, and the second row is the record that a type being
+selectable says nothing about being obtainable.
