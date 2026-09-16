@@ -256,8 +256,14 @@ in [`tests/cleanup-test.md`](./tests/cleanup-test.md):
   and a `GuardDutyManagedSecurityGroup-*` appear after the VPC does. The endpoint holds the subnets,
   and then the security group holds the VPC. Deleting both and retrying the stack deletion completes
   it.
-- **The EKS control-plane log group** `/aws/eks/<cluster>/cluster`, which EKS creates outside the
-  stack and leaves behind.
+- **Two log groups that create themselves.** `/aws/eks/<cluster>/cluster`, which EKS creates when
+  cluster logging is on, and `/aws/lambda/<stack>-BootstrapTrigger-*`, which Lambda creates on its
+  first invocation. Neither belongs to the stack, so neither is deleted with it:
+
+  ```bash
+  aws logs describe-log-groups --query \
+    "logGroups[?contains(logGroupName,'<stack-name>')].logGroupName" --output text
+  ```
 
 ## 9. Known limits
 

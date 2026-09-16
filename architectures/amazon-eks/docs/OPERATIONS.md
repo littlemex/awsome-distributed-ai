@@ -192,3 +192,7 @@ This architecture does not ship least-privilege policy stacks for cluster admini
   scaling change and pass early. Verify by hand after an update, or recreate the stack.
 - Recreating a stack with the same name while the previous delete is in flight collides on the
   launch template, CodeBuild project and log group names, all of which derive from the stack name.
+- Deleting the stack leaves two log groups behind, because neither is a stack resource: the EKS
+  control-plane group and the trigger function's group, which Lambda creates itself on first
+  invocation. A delete of the whole stack in `us-west-2` was verified to leave nothing else — no VPC,
+  Elastic IP, placement group, launch template, CodeBuild project or IAM role.
