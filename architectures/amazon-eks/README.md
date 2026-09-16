@@ -141,6 +141,11 @@ conditions, and `run-instances --dry-run` accepts an EFA interface on a card tha
 Only a deploy settles it, and
 [`docs/COMPATIBILITY.md`](./docs/COMPATIBILITY.md) records which deploys happened.
 
+The `g7` family (RTX PRO 4500) has `NicLayout` and `GpuCount` entries and is **not** in
+`AllowedValues`: its nodes join and advertise their EFA interface, but the driver in the EKS AL2023
+NVIDIA AMI for 1.36 does not enumerate the GPU, so `nvidia.com/gpu` never appears. That is what the
+entries-without-a-selectable-value state means here — the layout is recorded, the type is not offered.
+
 To add a type: add a `NicLayout` entry and a `GpuCount` entry, add it to `AllowedValues`, run
 `tests/lint-templates.sh`, and launch it. If its card count is not already one of the thresholds in
 the template's `Cards*Plus` conditions, add a condition too.

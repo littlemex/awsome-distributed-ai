@@ -72,7 +72,18 @@ recording the result in the table below.
 | Date | Region | Kubernetes | Instance type | Nodes | AMI release | Result |
 |---|---|---|---|---|---|---|
 | 2026-09-16 | `us-west-2` (zone b) | 1.36 | `g4dn.8xlarge` | 2 | `1.36.3-20260911` | Both nodes `Ready`, each advertising `nvidia.com/gpu: 1` and `vpc.amazonaws.com/efa: 1`; `nvidia-smi` from a pod holding a GPU reports `Tesla T4, 580.178.04`; local NVMe assembled as `/dev/md127` (`raid0`, 838 GiB) at `/mnt/k8s-disks/0` |
-| 2026-09-16 | `us-west-2` (zones a, b) | 1.36 | `g7e.12xlarge` | 2 | — | Not launched. `InsufficientInstanceCapacity` in both zones, and a capacity reservation for two instances was refused in every zone of `us-west-2`, `us-east-1` and `us-east-2` |
+| 2026-09-16 | `us-west-2` (zones a, b) | 1.36 | `g7e.12xlarge` | 2 | — | Not launched. `InsufficientInstanceCapacity` in both zones, and a capacity reservation for two instances was refused in every zone of `us-west-2`, `us-east-1`, `us-east-2` and `eu-south-2` |
+| 2026-09-16 | `eu-south-2` (zone b) | 1.36 | `g7.12xlarge` | 2 | `1.36.3-20260911` | **Launched, GPUs unusable.** Both nodes joined, went `Ready` and advertised `vpc.amazonaws.com/efa: 1`, and `nvidia.com/gpu` never appeared. On the host, the driver is loaded (`NVRM 580.178.04`), `/dev/nvidia0` and `/dev/nvidia1` exist, `lspci` shows two `NVIDIA Corporation Device 2c3a` 3D controllers — and `nvidia-smi` reports `No devices were found`. The device plugin logs `No devices found. Waiting indefinitely.`, and restarting it changes nothing. The bootstrap refused to report success and the stack failed with the counts it observed |
+
+Two things that a Region can take away, both found by deploying into a Region for the first time:
+
+- **`g7` and `g7e` are not usable through this path today.** `g7e` has no capacity to launch, and `g7`
+  launches but its GPU is not enumerated by the driver in the EKS AL2023 NVIDIA AMI. A newer AMI or a
+  custom AMI with a newer driver is what would change that; nothing in these templates can.
+- **`m6i` is not offered in `eu-south-2`.** The system node group failed with `Unsupported - The
+  requested configuration is currently not supported`, which names neither the type nor the Region.
+  The default `SystemInstanceType` is now `m5.xlarge` for breadth of coverage, and PARAMETERS.md
+  carries the offerings check.
 
 Add-on versions the 1.36 cluster resolved to: `vpc-cni v1.22.4-eksbuild.3`,
 `kube-proxy v1.36.0-eksbuild.21`, `coredns v1.14.3-eksbuild.16`,

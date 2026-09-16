@@ -66,8 +66,12 @@ Parameters:
     Description: Node security group from the prerequisites stack.
   SystemInstanceType:
     Type: String
-    Default: m6i.xlarge
-    Description: Instance type of the system node group.
+    Default: m5.xlarge
+    Description: >-
+      Instance type of the system node group. Any general-purpose type works; the default is chosen
+      for breadth of Region coverage rather than for performance, because a type that is not offered
+      in the Region fails the node group with an opaque "Unsupported - The requested configuration is
+      currently not supported".
   SystemNodeCount:
     Type: Number
     Default: 2

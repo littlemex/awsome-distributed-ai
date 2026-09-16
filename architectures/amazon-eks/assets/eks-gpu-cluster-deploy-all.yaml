@@ -71,8 +71,10 @@ Parameters:
     Description: Kubernetes version. Only versions this architecture has been deployed on are offered.
   SystemInstanceType:
     Type: String
-    Default: m6i.xlarge
-    Description: Instance type of the two system nodes that carry CoreDNS and other cluster services.
+    Default: m5.xlarge
+    Description: >-
+      Instance type of the two system nodes that carry CoreDNS and other cluster services. Check that
+      the Region offers it: a type that is not offered fails the node group with "Unsupported".
   AdminRoleArn:
     Type: String
     Default: ""

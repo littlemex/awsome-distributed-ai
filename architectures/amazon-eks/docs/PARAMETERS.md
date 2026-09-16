@@ -19,7 +19,7 @@ the child stacks, so a nested deploy never asks for a subnet id or a security gr
 | Parameter | Type | Default | What it decides |
 |---|---|---|---|
 | `KubernetesVersion` | String | `1.36` | Control plane version, the AL2023 NVIDIA AMI release, and the `kubectl` the bootstrap downloads. `AllowedValues` are the versions this architecture has been deployed on; see [COMPATIBILITY.md](./COMPATIBILITY.md) |
-| `SystemInstanceType` | String | `m6i.xlarge` | Instance type of the two system nodes. They carry CoreDNS and the node-feature-discovery master, which cannot run on a tainted GPU node |
+| `SystemInstanceType` | String | `m5.xlarge` | Instance type of the two system nodes. They carry CoreDNS and the node-feature-discovery master, which cannot run on a tainted GPU node. The default is the type with the widest Region coverage, not the fastest: a type the Region does not offer fails the node group with `Unsupported - The requested configuration is currently not supported`, which names nothing. Check first with `aws ec2 describe-instance-type-offerings --location-type availability-zone --filters Name=instance-type,Values=<type> Name=location,Values=<az>` |
 | `AdminRoleArn` | String | empty | An extra IAM principal that receives `AmazonEKSClusterAdminPolicy`. The principal that creates the stack always has it, so this is for the case where one principal provisions and another uses the cluster — which is what a pre-provisioned workshop account is |
 
 ### GPU capacity
