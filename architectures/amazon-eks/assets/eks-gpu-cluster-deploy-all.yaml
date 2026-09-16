@@ -1,0 +1,246 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# The one-click and Workshop Studio artifact. It creates the three child stacks in order and
+# passes each one the outputs it needs, so an event places four templates in one bucket and
+# deploys one of them, while anyone who wants to replace a layer can deploy the child directly.
+# Same arrangement as architectures/aws-pcs/assets/pcs-ml-cluster-deploy-all.yaml, and as
+# architectures/sagemaker-hyperpod-eks/cfn-templates/nested-stacks/main-stack.yaml.
+#
+# S3BucketName and S3KeyPrefix decide where the children are fetched from. Overriding them is how
+# an event serves its own copy, and how you test an unpublished change; see docs/DEPLOY-TESTING.md.
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Amazon EKS GPU cluster for distributed inference and training: VPC, EKS cluster, system node
+  group, EFA-enabled GPU node group in a cluster placement group, and the NVIDIA and EFA device
+  plugins installed and verified on every GPU node.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Network
+        Parameters:
+          - PrimarySubnetAZ
+          - SecondarySubnetAZ
+          - VpcCidr
+      - Label:
+          default: Cluster
+        Parameters:
+          - KubernetesVersion
+          - SystemInstanceType
+          - AdminRoleArn
+      - Label:
+          default: GPU capacity
+        Parameters:
+          - GpuInstanceType
+          - GpuNodeCount
+          - GpuRootVolumeSize
+          - CapacityReservationId
+          - CapacityReservationType
+      - Label:
+          default: Optional
+        Parameters:
+          - PrePullImage
+          - DeployFsxLustre
+          - FsxStorageCapacity
+      - Label:
+          default: Template location (override to deploy an unpublished copy)
+        Parameters:
+          - S3BucketName
+          - S3KeyPrefix
+
+Parameters:
+  PrimarySubnetAZ:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: >-
+      Availability Zone of the GPU nodes, and of the capacity reservation when there is one. EFA
+      traffic and the cluster placement group stay inside one zone.
+  SecondarySubnetAZ:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: A second Availability Zone, different from the first, for the EKS control plane subnet.
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+  KubernetesVersion:
+    Type: String
+    Default: "1.36"
+    AllowedValues: ["1.35", "1.36"]
+    Description: Kubernetes version. Only versions this architecture has been deployed on are offered.
+  SystemInstanceType:
+    Type: String
+    Default: m6i.xlarge
+    Description: Instance type of the two system nodes that carry CoreDNS and other cluster services.
+  AdminRoleArn:
+    Type: String
+    Default: ""
+    Description: >-
+      Extra IAM role or user that receives cluster-admin. Needed when the stack is created by one
+      principal and used by another, which is how a provisioned workshop account works.
+  GpuInstanceType:
+    Type: String
+    Default: g7e.12xlarge
+    AllowedValues:
+      - g7e.12xlarge
+      - g7e.24xlarge
+      - g7e.48xlarge
+      - g6e.12xlarge
+      - g6e.48xlarge
+      - g5.12xlarge
+      - g4dn.8xlarge
+      - p4d.24xlarge
+      - p4de.24xlarge
+      - p5.48xlarge
+      - p5en.48xlarge
+      - p6-b200.48xlarge
+      - p6-b300.48xlarge
+    Description: GPU instance type. README section 3 says which types have been launched from this template.
+  GpuNodeCount:
+    Type: Number
+    Default: 2
+    MinValue: 0
+    MaxValue: 8
+    Description: >-
+      Number of GPU nodes. Disaggregated inference needs at least 2. 0 builds the cluster and
+      installs the device plugins with no GPU capacity, which is a cheap smoke test only.
+  GpuRootVolumeSize:
+    Type: Number
+    Default: 300
+    MinValue: 100
+  CapacityReservationId:
+    Type: String
+    Default: ""
+    Description: Targeted On-Demand Capacity Reservation or Capacity Block id. Empty launches On-Demand.
+  CapacityReservationType:
+    Type: String
+    Default: targeted-odcr
+    AllowedValues: [targeted-odcr, capacity-block]
+  PrePullImage:
+    Type: String
+    Default: ""
+    Description: >-
+      Image pulled onto every GPU node once the nodes are verified. Started and not waited for, so
+      it cannot roll the stack back.
+  DeployFsxLustre:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Create an FSx for Lustre filesystem and install its CSI driver, for model weights that do not
+      fit the node's local NVMe or should outlive the nodes.
+  FsxStorageCapacity:
+    Type: Number
+    Default: 1200
+    AllowedValues: [1200, 2400, 4800, 7200, 9600, 12000]
+    Description: Filesystem size in GiB. PERSISTENT_2 accepts multiples of 1200 only.
+  S3BucketName:
+    Type: String
+    Default: awsome-distributed-ai
+    Description: Bucket holding the three child templates.
+  S3KeyPrefix:
+    Type: String
+    Default: templates/amazon-eks/
+    Description: Key prefix of the child templates, with a trailing slash.
+
+Rules:
+  DistinctAvailabilityZones:
+    Assertions:
+      - Assert: !Not [!Equals [!Ref PrimarySubnetAZ, !Ref SecondarySubnetAZ]]
+        AssertDescription: >-
+          PrimarySubnetAZ and SecondarySubnetAZ must differ. EKS requires subnets in two
+          Availability Zones.
+  CapacityBlockNeedsReservation:
+    RuleCondition: !Equals [!Ref CapacityReservationType, capacity-block]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref CapacityReservationId, ""]]
+        AssertDescription: >-
+          CapacityReservationType=capacity-block requires CapacityReservationId.
+  PrePullNeedsNodes:
+    Assertions:
+      - Assert: !Or
+          - !Equals [!Ref PrePullImage, ""]
+          - !Not [!Equals [!Ref GpuNodeCount, "0"]]
+        AssertDescription: PrePullImage has nowhere to run when GpuNodeCount is 0.
+
+Resources:
+  PrerequisitesStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${S3BucketName}.s3.amazonaws.com/${S3KeyPrefix}eks-cluster-prerequisites.yaml"
+      Parameters:
+        PrimarySubnetAZ: !Ref PrimarySubnetAZ
+        SecondarySubnetAZ: !Ref SecondarySubnetAZ
+        VpcCidr: !Ref VpcCidr
+        DeployFsxLustre: !Ref DeployFsxLustre
+        FsxStorageCapacity: !Ref FsxStorageCapacity
+
+  ClusterStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${S3BucketName}.s3.amazonaws.com/${S3KeyPrefix}eks-cluster.yaml"
+      Parameters:
+        ClusterName: !Ref AWS::StackName
+        KubernetesVersion: !Ref KubernetesVersion
+        AdminRoleArn: !Ref AdminRoleArn
+        PrivateSubnetId: !GetAtt PrerequisitesStack.Outputs.PrivateSubnetId
+        ControlPlaneSubnetId: !GetAtt PrerequisitesStack.Outputs.ControlPlaneSubnetId
+        NodeSecurityGroupId: !GetAtt PrerequisitesStack.Outputs.NodeSecurityGroupId
+        SystemInstanceType: !Ref SystemInstanceType
+        FsxFileSystemId: !GetAtt PrerequisitesStack.Outputs.FsxFileSystemId
+
+  GpuNodeGroupStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${S3BucketName}.s3.amazonaws.com/${S3KeyPrefix}eks-add-gpu-nodegroup.yaml"
+      Parameters:
+        ClusterName: !GetAtt ClusterStack.Outputs.ClusterName
+        KubernetesVersion: !Ref KubernetesVersion
+        PrivateSubnetId: !GetAtt PrerequisitesStack.Outputs.PrivateSubnetId
+        NodeSecurityGroupId: !GetAtt PrerequisitesStack.Outputs.NodeSecurityGroupId
+        ClusterSecurityGroupId: !GetAtt ClusterStack.Outputs.ClusterSecurityGroupId
+        NodeRoleArn: !GetAtt ClusterStack.Outputs.NodeRoleArn
+        GpuInstanceType: !Ref GpuInstanceType
+        GpuNodeCount: !Ref GpuNodeCount
+        GpuRootVolumeSize: !Ref GpuRootVolumeSize
+        CapacityReservationId: !Ref CapacityReservationId
+        CapacityReservationType: !Ref CapacityReservationType
+        PrePullImage: !Ref PrePullImage
+
+Outputs:
+  ClusterName:
+    Description: Name of the cluster, which is the stack name.
+    Value: !GetAtt ClusterStack.Outputs.ClusterName
+  ClusterArn:
+    Description: ARN of the cluster.
+    Value: !GetAtt ClusterStack.Outputs.ClusterArn
+  Region:
+    Description: Region the cluster runs in.
+    Value: !Ref AWS::Region
+  KubeconfigCommand:
+    Description: Run this first; every other command in the documentation assumes it.
+    Value: !GetAtt ClusterStack.Outputs.KubeconfigCommand
+  VpcId:
+    Value: !GetAtt PrerequisitesStack.Outputs.VpcId
+  PrivateSubnetId:
+    Description: Subnet holding the nodes. An example that pins a pod to this subnet needs it.
+    Value: !GetAtt PrerequisitesStack.Outputs.PrivateSubnetId
+  GpuNodeGroupName:
+    Value: !GetAtt GpuNodeGroupStack.Outputs.GpuNodeGroupName
+  GpuInstanceType:
+    Value: !GetAtt GpuNodeGroupStack.Outputs.GpuInstanceType
+  BootstrapLogGroup:
+    Description: Log group with the device plugin install and the per-node verification output.
+    Value: !GetAtt GpuNodeGroupStack.Outputs.BootstrapLogGroup
+  FsxFileSystemId:
+    Description: FSx for Lustre filesystem id, empty when DeployFsxLustre is false.
+    Value: !GetAtt PrerequisitesStack.Outputs.FsxFileSystemId
+  FsxDnsName:
+    Description: >-
+      FSx for Lustre DNS name, empty when DeployFsxLustre is false. Needed by the PersistentVolume
+      manifest in docs/OPERATIONS.md.
+    Value: !GetAtt PrerequisitesStack.Outputs.FsxDnsName
+  FsxMountName:
+    Description: FSx for Lustre mount name, empty when DeployFsxLustre is false.
+    Value: !GetAtt PrerequisitesStack.Outputs.FsxMountName
