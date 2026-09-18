@@ -32,6 +32,10 @@ Metadata:
           - SystemInstanceType
           - SystemNodeCount
       - Label:
+          default: Cluster networking
+        Parameters:
+          - ServiceIpv4Cidr
+      - Label:
           default: Shared storage for model weights (optional)
         Parameters:
           - FsxFileSystemId
@@ -81,6 +85,14 @@ Parameters:
       Number of system nodes. Two by default so CoreDNS has two replicas on separate nodes, and
       so the node-feature-discovery master the NVIDIA chart deploys has somewhere to run that is
       not a tainted GPU node.
+  ServiceIpv4Cidr:
+    Type: String
+    Default: 10.100.0.0/16
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+    Description: >-
+      CIDR the cluster allocates Service IPs from. Set explicitly rather than left to EKS, because a
+      node group that names its own AMI has to put this value in its own bootstrap configuration and a
+      guess there is a node that never joins. Must not overlap the VPC CIDR.
   FsxFileSystemId:
     Type: String
     Default: ""
@@ -116,6 +128,8 @@ Resources:
       AccessConfig:
         AuthenticationMode: API
         BootstrapClusterCreatorAdminPermissions: true
+      KubernetesNetworkConfig:
+        ServiceIpv4Cidr: !Ref ServiceIpv4Cidr
       ResourcesVpcConfig:
         SubnetIds:
           - !Ref PrivateSubnetId
@@ -234,3 +248,14 @@ Outputs:
   KubeconfigCommand:
     Description: Command that writes a kubeconfig entry for this cluster.
     Value: !Sub "aws eks update-kubeconfig --name ${Cluster} --region ${AWS::Region}"
+  ClusterEndpoint:
+    Description: >-
+      API server endpoint. A node group that names its own AMI needs this, because EKS then merges no
+      bootstrap user data of its own.
+    Value: !GetAtt Cluster.Endpoint
+  ClusterCertificateAuthority:
+    Description: Base64 cluster CA, needed by a node group that names its own AMI.
+    Value: !GetAtt Cluster.CertificateAuthorityData
+  ClusterServiceCidr:
+    Description: Service IPv4 CIDR, needed by a node group that names its own AMI.
+    Value: !Ref ServiceIpv4Cidr

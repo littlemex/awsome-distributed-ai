@@ -27,6 +27,7 @@ the child stacks, so a nested deploy never asks for a subnet id or a security gr
 | Parameter | Type | Default | What it decides |
 |---|---|---|---|
 | `GpuInstanceType` | String | `g7e.12xlarge` | Instance type of the GPU node group, and through the `NicLayout` mapping the whole interface layout. See README section 3 for which types have been launched |
+| `NodeAmiId` | String | empty | Custom node AMI for the GPU nodes. Empty uses the EKS-optimised AL2023 NVIDIA AMI for `KubernetesVersion`. The `g7` family requires one and a `Rules` assertion says so at submit time: that AMI's driver does not enumerate its RTX PRO GPUs, so the nodes would join, advertise their EFA interface and never advertise `nvidia.com/gpu`. [`ami/`](../../../ami) in this repository builds a node AMI with a driver that does |
 | `GpuNodeCount` | Number | `2` | Minimum, desired and maximum of the GPU node group, all the same value. A prefill/decode split needs at least 2. `0` creates the cluster and installs the device plugins with no GPU capacity: useful to test template changes cheaply, and not evidence that GPU nodes work |
 | `GpuRootVolumeSize` | Number | `300` | Root EBS volume in GiB. Inference images are large, and they land on the root volume unless containerd is pointed at the NVMe volume |
 | `CapacityReservationId` | String | empty | A targeted On-Demand Capacity Reservation or a Capacity Block. Empty launches On-Demand and consumes an open reservation whose attributes match |
@@ -65,6 +66,10 @@ meaning as above.
 | `PrivateSubnetId`, `ControlPlaneSubnetId`, `NodeSecurityGroupId` | ids | required | Outputs of the prerequisites stack |
 | `FsxFileSystemId` | String | empty | A non-empty value installs the FSx CSI driver add-on |
 
+Outputs added for the custom-AMI path: `ClusterEndpoint`, `ClusterCertificateAuthority` and
+`ClusterServiceCidr`. A node group that names its own AMI needs all three, because EKS merges no
+bootstrap user data once a launch template carries an `ImageId`.
+
 ## `eks-add-gpu-nodegroup.yaml`
 
 | Parameter | Type | Default | What it decides |
@@ -75,4 +80,6 @@ meaning as above.
 | `NodeSecurityGroupId` | id | required | A security group that allows all traffic between its own members, which is EFA's requirement |
 | `ClusterSecurityGroupId` | id | required | The cluster's own security group. EKS stops attaching it once the launch template names any security group, and a node without it never joins |
 | `NodeRoleArn` | String | empty | Node IAM role. Empty creates one with the four managed policies a GPU node needs |
+| `NodeAmiId` | String | empty | As above. Setting it switches the node group to `AmiType: CUSTOM` and moves the whole `NodeConfig` — cluster block, labels, taint, local storage — into the launch template's user data |
+| `ClusterEndpoint`, `ClusterCertificateAuthority`, `ClusterServiceCidr` | String | empty | Required with `NodeAmiId`, and rejected as a set at submit time when one is missing. Read them from `aws eks describe-cluster` |
 | `GpuInstanceType`, `GpuNodeCount`, `GpuRootVolumeSize`, `CapacityReservationId`, `CapacityReservationType`, `PrePullImage` | | | As above |

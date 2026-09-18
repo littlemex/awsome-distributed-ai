@@ -36,6 +36,7 @@ Metadata:
         Parameters:
           - NodeGroupName
           - GpuInstanceType
+          - NodeAmiId
           - GpuNodeCount
           - GpuRootVolumeSize
           - CapacityReservationId
@@ -66,6 +67,34 @@ Parameters:
       The cluster security group of the EKS cluster (aws eks describe-cluster --name <cluster>
       --query cluster.resourcesVpcConfig.clusterSecurityGroupId). EKS does not attach it
       automatically when the launch template specifies security groups.
+  NodeAmiId:
+    Type: String
+    Default: ""
+    AllowedPattern: ^(ami-[0-9a-f]{8,17})?$
+    Description: >-
+      Custom node AMI. Empty uses the EKS-optimised AL2023 NVIDIA AMI for KubernetesVersion. A value
+      here is how a GPU family that AMI's driver does not enumerate becomes usable: build one with
+      ami/ in this repository. Setting it requires ClusterEndpoint, ClusterCertificateAuthority and
+      ClusterServiceCidr, because EKS stops merging its own bootstrap user data as soon as the launch
+      template names an AMI.
+  ClusterEndpoint:
+    Type: String
+    Default: ""
+    Description: >-
+      API server endpoint, only needed with NodeAmiId
+      (aws eks describe-cluster --name <cluster> --query cluster.endpoint).
+  ClusterCertificateAuthority:
+    Type: String
+    Default: ""
+    Description: >-
+      Base64 cluster CA, only needed with NodeAmiId
+      (aws eks describe-cluster --name <cluster> --query cluster.certificateAuthority.data).
+  ClusterServiceCidr:
+    Type: String
+    Default: ""
+    Description: >-
+      Service IPv4 CIDR, only needed with NodeAmiId
+      (aws eks describe-cluster --name <cluster> --query cluster.kubernetesNetworkConfig.serviceIpv4Cidr).
   NodeRoleArn:
     Type: String
     Default: ""
@@ -81,6 +110,9 @@ Parameters:
     Type: String
     Default: g7e.12xlarge
     AllowedValues:
+      - g7.12xlarge
+      - g7.24xlarge
+      - g7.48xlarge
       - g7e.12xlarge
       - g7e.24xlarge
       - g7e.48xlarge
@@ -139,6 +171,27 @@ Rules:
         AssertDescription: >-
           CapacityReservationType=capacity-block requires CapacityReservationId. Without it the
           launch template asks for capacity-block billing with no reservation to bill against.
+  CustomAmiNeedsClusterDetails:
+    RuleCondition: !Not [!Equals [!Ref NodeAmiId, ""]]
+    Assertions:
+      - Assert: !And
+          - !Not [!Equals [!Ref ClusterEndpoint, ""]]
+          - !Not [!Equals [!Ref ClusterCertificateAuthority, ""]]
+          - !Not [!Equals [!Ref ClusterServiceCidr, ""]]
+        AssertDescription: >-
+          NodeAmiId requires ClusterEndpoint, ClusterCertificateAuthority and ClusterServiceCidr.
+          A launch template that names an AMI stops EKS from merging its bootstrap user data, so the
+          node has to be told how to reach the cluster.
+  RtxProFamiliesNeedACustomAmi:
+    RuleCondition: !Contains
+      - [g7.12xlarge, g7.24xlarge, g7.48xlarge]
+      - !Ref GpuInstanceType
+    Assertions:
+      - Assert: !Not [!Equals [!Ref NodeAmiId, ""]]
+        AssertDescription: >-
+          The g7 family needs NodeAmiId. Its RTX PRO GPUs are not enumerated by the driver in the
+          EKS-optimised AL2023 NVIDIA AMI, so a node group without a custom AMI joins, advertises its
+          EFA interface and never advertises nvidia.com/gpu. See docs/COMPATIBILITY.md.
   PrePullNeedsNodes:
     Assertions:
       - Assert: !Or
@@ -284,6 +337,7 @@ Mappings:
       Version: "1.36.4"
 
 Conditions:
+  HasCustomAmi: !Not [!Equals [!Ref NodeAmiId, ""]]
   CreateNodeRole: !Equals [!Ref NodeRoleArn, ""]
   HasReservation: !Not [!Equals [!Ref CapacityReservationId, ""]]
   IsCapacityBlock: !Equals [!Ref CapacityReservationType, capacity-block]
@@ -349,6 +403,7 @@ Resources:
       LaunchTemplateName: !Sub "${AWS::StackName}-gpu"
       LaunchTemplateData:
         InstanceType: !Ref GpuInstanceType
+        ImageId: !If [HasCustomAmi, !Ref NodeAmiId, !Ref AWS::NoValue]
         Placement: !If
           - UsePlacementGroup
           - GroupName: !Ref GpuPlacementGroup
@@ -605,21 +660,62 @@ Resources:
         # Assemble the local NVMe drives as one RAID0 volume, which nodeadm mounts under
         # /mnt/k8s-disks/0 and containerd uses for image layers. The inference examples in
         # examples/inference read model weights from that path.
-        UserData:
-          Fn::Base64: |
-            MIME-Version: 1.0
-            Content-Type: multipart/mixed; boundary="==BOUNDARY=="
+        # Without a custom AMI, EKS merges its own bootstrap user data with this, so only the local
+        # storage stanza is needed. With one, nothing is merged: the cluster block, the labels and
+        # the taint have to be here, or the node never joins and pods land on it before the node
+        # group's own taint is applied.
+        UserData: !If
+          - HasCustomAmi
+          - Fn::Base64: !Sub |
+              MIME-Version: 1.0
+              Content-Type: multipart/mixed; boundary="==BOUNDARY=="
 
-            --==BOUNDARY==
-            Content-Type: application/node.eks.aws
+              --==BOUNDARY==
+              Content-Type: application/node.eks.aws
 
-            apiVersion: node.eks.aws/v1alpha1
-            kind: NodeConfig
-            spec:
-              instance:
-                localStorage:
-                  strategy: RAID0
-            --==BOUNDARY==--
+              apiVersion: node.eks.aws/v1alpha1
+              kind: NodeConfig
+              spec:
+                cluster:
+                  name: ${ClusterName}
+                  apiServerEndpoint: ${ClusterEndpoint}
+                  certificateAuthority: ${ClusterCertificateAuthority}
+                  cidr: ${ClusterServiceCidr}
+                instance:
+                  localStorage:
+                    strategy: RAID0
+                # nodeadm writes containerd's configuration at boot, so the NVIDIA runtime is
+                # registered here rather than in the image: a container without it gets no driver
+                # libraries and the device plugin fails with NVML ERROR_LIBRARY_NOT_FOUND while
+                # nvidia-smi works on the host.
+                containerd:
+                  config: |
+                    [plugins.'io.containerd.cri.v1.runtime'.containerd]
+                    default_runtime_name = 'nvidia'
+                    [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.nvidia]
+                    runtime_type = 'io.containerd.runc.v2'
+                    [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.nvidia.options]
+                    BinaryName = '/usr/bin/nvidia-container-runtime'
+                    SystemdCgroup = true
+                kubelet:
+                  flags:
+                    - --node-labels=role=gpu,eks.amazonaws.com/nodegroup=${NodeGroupName}
+                    - --register-with-taints=nvidia.com/gpu=true:NoSchedule
+              --==BOUNDARY==--
+          - Fn::Base64: |
+              MIME-Version: 1.0
+              Content-Type: multipart/mixed; boundary="==BOUNDARY=="
+
+              --==BOUNDARY==
+              Content-Type: application/node.eks.aws
+
+              apiVersion: node.eks.aws/v1alpha1
+              kind: NodeConfig
+              spec:
+                instance:
+                  localStorage:
+                    strategy: RAID0
+              --==BOUNDARY==--
         TagSpecifications:
           - ResourceType: instance
             Tags:
@@ -632,7 +728,7 @@ Resources:
       ClusterName: !Ref ClusterName
       NodegroupName: !Ref NodeGroupName
       NodeRole: !If [CreateNodeRole, !GetAtt NodeRole.Arn, !Ref NodeRoleArn]
-      AmiType: AL2023_x86_64_NVIDIA
+      AmiType: !If [HasCustomAmi, CUSTOM, AL2023_x86_64_NVIDIA]
       Subnets:
         - !Ref PrivateSubnetId
       LaunchTemplate:

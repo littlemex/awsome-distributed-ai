@@ -35,6 +35,7 @@ Metadata:
           default: GPU capacity
         Parameters:
           - GpuInstanceType
+          - NodeAmiId
           - GpuNodeCount
           - GpuRootVolumeSize
           - CapacityReservationId
@@ -85,6 +86,9 @@ Parameters:
     Type: String
     Default: g7e.12xlarge
     AllowedValues:
+      - g7.12xlarge
+      - g7.24xlarge
+      - g7.48xlarge
       - g7e.12xlarge
       - g7e.24xlarge
       - g7e.48xlarge
@@ -107,6 +111,14 @@ Parameters:
     Description: >-
       Number of GPU nodes. Disaggregated inference needs at least 2. 0 builds the cluster and
       installs the device plugins with no GPU capacity, which is a cheap smoke test only.
+  NodeAmiId:
+    Type: String
+    Default: ""
+    AllowedPattern: ^(ami-[0-9a-f]{8,17})?$
+    Description: >-
+      Custom node AMI for the GPU nodes. Empty uses the EKS-optimised AL2023 NVIDIA AMI. The g7
+      family requires one, because that AMI's driver does not enumerate its GPUs; ami/ in this
+      repository builds a node AMI with a driver that does.
   GpuRootVolumeSize:
     Type: Number
     Default: 300
@@ -204,6 +216,10 @@ Resources:
         ClusterSecurityGroupId: !GetAtt ClusterStack.Outputs.ClusterSecurityGroupId
         NodeRoleArn: !GetAtt ClusterStack.Outputs.NodeRoleArn
         GpuInstanceType: !Ref GpuInstanceType
+        NodeAmiId: !Ref NodeAmiId
+        ClusterEndpoint: !GetAtt ClusterStack.Outputs.ClusterEndpoint
+        ClusterCertificateAuthority: !GetAtt ClusterStack.Outputs.ClusterCertificateAuthority
+        ClusterServiceCidr: !GetAtt ClusterStack.Outputs.ClusterServiceCidr
         GpuNodeCount: !Ref GpuNodeCount
         GpuRootVolumeSize: !Ref GpuRootVolumeSize
         CapacityReservationId: !Ref CapacityReservationId
