@@ -87,19 +87,22 @@ aws cloudformation create-stack --stack-name rule-c --region "$REGION" \
                ParameterKey=PrePullImage,ParameterValue=public.ecr.aws/docker/library/busybox:1.36
 ```
 
-**Expected:** all three fail immediately with
-`An error occurred (ValidationError) ... Parameter validation failed` and a message naming the
-rule, and
+**Expected:** `create-stack` returns a stack id, and each stack then fails its parameter validation
+before creating any resource, and
 
 ```bash
 aws cloudformation describe-stacks --stack-name rule-a --region "$REGION"
 ```
 
-**Expected:** `Stack with id rule-a does not exist` — the rule ran at submit time, so no stack
-and no VPC were created. Repeat for `rule-b` and `rule-c`.
+**Expected:** `ROLLBACK_COMPLETE`, and the first rollback event reading
+`Parameter validation failed: assertion error: <the rule's AssertDescription>`. Measured on
+2026-09-18: both rules in the GPU node group template behave this way, so the guard costs a stack
+that never allocates anything rather than a rejected API call. Delete the stacks afterwards and
+repeat for `rule-b` and `rule-c`.
 
-A rule that is *missing* shows up here as a stack that starts creating. If any of the three
-starts creating, delete it and treat it as a failure.
+A rule that is *missing* shows up here as a stack that keeps going past parameter validation and
+starts creating resources. If any of the three creates a resource, delete it and treat it as a
+failure.
 
 ---
 

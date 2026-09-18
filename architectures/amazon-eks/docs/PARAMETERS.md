@@ -11,7 +11,7 @@ the child stacks, so a nested deploy never asks for a subnet id or a security gr
 | Parameter | Type | Default | What it decides |
 |---|---|---|---|
 | `PrimarySubnetAZ` | AZ name | required | Zone of the public subnet, the node subnet, the NAT gateway and every GPU node. Must be the zone of the capacity reservation when one is used: EFA traffic and the cluster placement group do not cross zones |
-| `SecondarySubnetAZ` | AZ name | required | Zone of the second private subnet, which exists only because EKS requires subnets in two zones. No nodes run there. Must differ from `PrimarySubnetAZ`, and a `Rules` assertion rejects the stack at submit time if it does not |
+| `SecondarySubnetAZ` | AZ name | required | Zone of the second private subnet, which exists only because EKS requires subnets in two zones. No nodes run there. Must differ from `PrimarySubnetAZ`, and a `Rules` assertion rejects the stack before any resource is created if it does not |
 | `VpcCidr` | String | `10.0.0.0/16` | Split into three /20 subnets: public, node, control plane |
 
 ### Cluster
@@ -27,11 +27,11 @@ the child stacks, so a nested deploy never asks for a subnet id or a security gr
 | Parameter | Type | Default | What it decides |
 |---|---|---|---|
 | `GpuInstanceType` | String | `g7e.12xlarge` | Instance type of the GPU node group, and through the `NicLayout` mapping the whole interface layout. See README section 3 for which types have been launched |
-| `NodeAmiId` | String | empty | Custom node AMI for the GPU nodes. Empty uses the EKS-optimised AL2023 NVIDIA AMI for `KubernetesVersion`. The `g7` family requires one and a `Rules` assertion says so at submit time: that AMI's driver does not enumerate its RTX PRO GPUs, so the nodes would join, advertise their EFA interface and never advertise `nvidia.com/gpu`. [`ami/`](../../../ami) in this repository builds a node AMI with a driver that does |
+| `NodeAmiId` | String | empty | Custom node AMI for the GPU nodes. Empty uses the EKS-optimised AL2023 NVIDIA AMI for `KubernetesVersion`. The `g7` family requires one and a `Rules` assertion says so before any resource is created: that AMI's driver does not enumerate its RTX PRO GPUs, so the nodes would join, advertise their EFA interface and never advertise `nvidia.com/gpu`. [`ami/`](../../../ami) in this repository builds a node AMI with a driver that does |
 | `GpuNodeCount` | Number | `2` | Minimum, desired and maximum of the GPU node group, all the same value. A prefill/decode split needs at least 2. `0` creates the cluster and installs the device plugins with no GPU capacity: useful to test template changes cheaply, and not evidence that GPU nodes work |
 | `GpuRootVolumeSize` | Number | `300` | Root EBS volume in GiB. Inference images are large, and they land on the root volume unless containerd is pointed at the NVMe volume |
 | `CapacityReservationId` | String | empty | A targeted On-Demand Capacity Reservation or a Capacity Block. Empty launches On-Demand and consumes an open reservation whose attributes match |
-| `CapacityReservationType` | String | `targeted-odcr` | `targeted-odcr` keeps the cluster placement group and targets the reservation. `capacity-block` sets `MarketType=capacity-block` and omits the placement group, which the Capacity Block already provides. `capacity-block` with an empty id is rejected at submit time |
+| `CapacityReservationType` | String | `targeted-odcr` | `targeted-odcr` keeps the cluster placement group and targets the reservation. `capacity-block` sets `MarketType=capacity-block` and omits the placement group, which the Capacity Block already provides. `capacity-block` with an empty id is rejected before any resource is created |
 
 ### Optional
 
@@ -81,5 +81,5 @@ bootstrap user data once a launch template carries an `ImageId`.
 | `ClusterSecurityGroupId` | id | required | The cluster's own security group. EKS stops attaching it once the launch template names any security group, and a node without it never joins |
 | `NodeRoleArn` | String | empty | Node IAM role. Empty creates one with the four managed policies a GPU node needs |
 | `NodeAmiId` | String | empty | As above. Setting it switches the node group to `AmiType: CUSTOM` and moves the whole `NodeConfig` — cluster block, labels, taint, local storage — into the launch template's user data |
-| `ClusterEndpoint`, `ClusterCertificateAuthority`, `ClusterServiceCidr` | String | empty | Required with `NodeAmiId`, and rejected as a set at submit time when one is missing. Read them from `aws eks describe-cluster` |
+| `ClusterEndpoint`, `ClusterCertificateAuthority`, `ClusterServiceCidr` | String | empty | Required with `NodeAmiId`, and rejected as a set before any resource is created when one is missing. Read them from `aws eks describe-cluster` |
 | `GpuInstanceType`, `GpuNodeCount`, `GpuRootVolumeSize`, `CapacityReservationId`, `CapacityReservationType`, `PrePullImage` | | | As above |
