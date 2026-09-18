@@ -76,9 +76,18 @@ recording the result in the table below.
 | 2026-09-16 | `eu-south-2` (zone b) | 1.36 | `g7.12xlarge` | 2 | `1.36.3-20260911` | **Launched; the GPU is not enumerated by this AMI.** Both nodes joined, went `Ready` and advertised `vpc.amazonaws.com/efa: 1`, and `nvidia.com/gpu` never appeared. On the host the driver is loaded (`NVRM 580.178.04`), `/dev/nvidia0` and `/dev/nvidia1` exist, `lspci` shows two `NVIDIA Corporation Device 2c3a` 3D controllers — and `nvidia-smi` reports `No devices were found`. The device plugin logs `No devices found. Waiting indefinitely.`, and restarting it changes nothing. The bootstrap refused to report success and the stack failed with the counts it observed |
 | 2026-09-18 | `eu-south-2` (zone b) | — | `g7.12xlarge` | 1 | `Deep Learning Base OSS Nvidia Driver GPU AMI (Amazon Linux 2023) 20260916` | **The same instance type, driven correctly by a different AMI.** `nvidia-smi` reports driver `595.91.07`, `NVIDIA UNIX Open Kernel Module`, and two `NVIDIA RTX PRO 4500 Blackwell Server Edition` GPUs with 32 GiB each. This is a plain EC2 instance, not a node: the Deep Learning AMI carries no kubelet, so it cannot be used as a node AMI as-is |
 
+| 2026-09-18 | `eu-south-2` (zone b) | 1.36 | `g7.12xlarge` | 2 | `awsome-distributed-ai-eks-al2023-1.36-1-20260918080154`, built by `ami/` on the EKS 1.36 AL2023 **standard** parent with `nvidia-open-595.91.07` and the NVIDIA container toolkit | **Works.** Node group `AmiType: CUSTOM`, both nodes `Ready` and advertising `nvidia.com/gpu: 2` and `vpc.amazonaws.com/efa: 1`; the bootstrap passed on its first poll (`2 of 2 node(s) Ready and advertising 2 GPU, 1 EFA; want 2`). From a pod holding both GPUs: `NVIDIA RTX PRO 4500 Blackwell Server Edition, 595.91.07, 32623 MiB` twice, `/dev/infiniband/uverbs0` present, `fi_info -p efa` reporting provider `efa` on domain `rdmap51s0-rdm`, and `/dev/md127` 1.8 TiB at `/mnt/k8s-disks/0` |
+
 Two things a Region can take away:
 
-- **`g7` and `g7e` are not usable through this path today, and the GPU is not the reason.** The same
+- **`g7` works with a node AMI built here, and only with one.** The first attempt used the
+  EKS-optimised AMI and is the row above from 2026-09-16. What the working AMI adds is two things, and
+  the second was found by deploying the first version of it: driver `595.91.07` with the open kernel
+  modules, **and** the NVIDIA container toolkit. Without the toolkit the host runs `nvidia-smi`
+  correctly while the device plugin fails with `Failed to initialize NVML: ERROR_LIBRARY_NOT_FOUND`,
+  because nothing injects the driver libraries into the container. The runtime is registered with
+  containerd from the node's own `NodeConfig`, since `nodeadm` writes that file at every boot.
+- **`g7e` remains unobtainable, and the GPU was never the reason for either family.** The same
   `g7.12xlarge` shows both of its RTX PRO 4500 Blackwell GPUs under driver `595.91.07` with the open
   kernel module, from the Deep Learning Base OSS Nvidia Driver AMI. What the EKS-optimised AL2023
   NVIDIA AMI ships is `580.178.04` with the proprietary module, and that combination does not

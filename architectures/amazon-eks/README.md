@@ -120,7 +120,10 @@ EFA, whether card 0 does, and the device index used on the other cards
 
 | Instance type | GPUs | Network cards | EFA interfaces | Launched from this template |
 |---|---|---|---|---|
-| `g7e.12xlarge` | 2 | 1 | 1 | see `docs/COMPATIBILITY.md` |
+| `g7.12xlarge` | 2 | 1 | 1 | yes, 2 nodes, `eu-south-2`, with `NodeAmiId` |
+| `g7.24xlarge` | 4 | 1 | 1 | no; needs `NodeAmiId` |
+| `g7.48xlarge` | 8 | 2 | 2 | no; needs `NodeAmiId` |
+| `g7e.12xlarge` | 2 | 1 | 1 | see `docs/COMPATIBILITY.md`; needs `NodeAmiId` |
 | `g7e.24xlarge` | 4 | 2 | 2 | no |
 | `g7e.48xlarge` | 8 | 4 | 4 | no |
 | `g6e.12xlarge` | 4 | 1 | 1 | no |
@@ -141,13 +144,26 @@ conditions, and `run-instances --dry-run` accepts an EFA interface on a card tha
 Only a deploy settles it, and
 [`docs/COMPATIBILITY.md`](./docs/COMPATIBILITY.md) records which deploys happened.
 
-The `g7` family (RTX PRO 4500) has `NicLayout` and `GpuCount` entries and is **not** in
-`AllowedValues`: its nodes join and advertise their EFA interface, and `nvidia.com/gpu` never appears,
-because the driver in the EKS AL2023 NVIDIA AMI for 1.36 does not enumerate that GPU. The GPU is not
-the problem — the same instance type shows both GPUs under a newer driver with the open kernel module
-— so what is missing is a node AMI carrying that driver, which `AmiType: AL2023_x86_64_NVIDIA` is not.
-[`docs/COMPATIBILITY.md`](./docs/COMPATIBILITY.md) has both observations. That is what the
-entries-without-a-selectable-value state means here: the layout is recorded, the type is not offered.
+### The `g7` family needs a node AMI you build
+
+The RTX PRO GPUs in the `g7` family are not enumerated by the driver in the EKS-optimised AL2023
+NVIDIA AMI: a node group without `NodeAmiId` joins, advertises its EFA interface, and never advertises
+`nvidia.com/gpu`. The GPU is not the problem — the same instance shows both GPUs under driver
+`595.91.07` with the open kernel modules — so what is missing is a node AMI carrying that driver.
+[`ami/`](../../ami) in this repository builds one:
+
+```bash
+cd ami
+packer init packer-ami.pkr.hcl
+AWS_REGION=eu-south-2 EKS_VERSION=1.36 INSTANCE_TYPE=g7.12xlarge \
+  NVIDIA_DRIVER_VERSION=595.91.07-1.amzn2023 NVIDIA_KERNEL_MODULES=open \
+  PCLUSTER_AMI_REGION=us-east-1 make ami_eks_al2023
+```
+
+Build on the family you intend to run: the playbook asserts that `nvidia-smi` reports the pinned
+driver, so the build host is what proves the driver drives that GPU. Pass the resulting AMI as
+`NodeAmiId`. A `Rules` assertion rejects a `g7` instance type without one at submit time rather than
+after the nodes are running, and `docs/COMPATIBILITY.md` records which combinations were run.
 
 To add a type: add a `NicLayout` entry and a `GpuCount` entry, add it to `AllowedValues`, run
 `tests/lint-templates.sh`, and launch it. If its card count is not already one of the thresholds in
