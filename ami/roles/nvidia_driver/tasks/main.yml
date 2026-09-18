@@ -37,11 +37,15 @@
     dest: /etc/yum.repos.d/nvidia-container-toolkit.repo
     mode: "0644"
 
+- name: Import the NVIDIA container toolkit signing key
+  ansible.builtin.rpm_key:
+    key: https://nvidia.github.io/libnvidia-container/gpgkey
+    state: present
+
 - name: Install NVIDIA container toolkit
   ansible.builtin.dnf:
-    name: nvidia-container-toolkit
+    name: "nvidia-container-toolkit-{{ nvidia_container_toolkit_version }}"
     state: present
-    disable_gpg_check: true
 
 - name: Reboot after NVIDIA driver installation
   ansible.builtin.reboot:

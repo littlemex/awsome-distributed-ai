@@ -12,6 +12,7 @@ updating it reads first.
 | GPU AMI | `AL2023_x86_64_NVIDIA` for the cluster version | `AmiType` in `eks-add-gpu-nodegroup.yaml` |
 | System AMI | `AL2023_x86_64_STANDARD` | `AmiType` in `eks-cluster.yaml` |
 | `kubectl` in the bootstrap | `1.35.8` / `1.36.4`, selected by `KubernetesVersion` | `KubectlVersion` mapping |
+| Node AMI driver for the RTX PRO families | `nvidia-open-595.91.07-1.amzn2023` with `nvidia-container-toolkit-1.20.0-1` | `ami/roles/nvidia_driver/defaults/main.yml`, built into a custom AMI passed as `NodeAmiId` |
 | `helm` in the bootstrap | `3.19.0` | `HELM_VERSION` in the buildspec |
 | NVIDIA device plugin chart | `0.20.0` | `NVIDIA_DEVICE_PLUGIN_CHART_VERSION` in the buildspec |
 | EFA device plugin chart | `v0.5.32` | `EFA_DEVICE_PLUGIN_CHART_VERSION` in the buildspec |
@@ -76,7 +77,7 @@ recording the result in the table below.
 | 2026-09-16 | `eu-south-2` (zone b) | 1.36 | `g7.12xlarge` | 2 | `1.36.3-20260911` | **Launched; the GPU is not enumerated by this AMI.** Both nodes joined, went `Ready` and advertised `vpc.amazonaws.com/efa: 1`, and `nvidia.com/gpu` never appeared. On the host the driver is loaded (`NVRM 580.178.04`), `/dev/nvidia0` and `/dev/nvidia1` exist, `lspci` shows two `NVIDIA Corporation Device 2c3a` 3D controllers — and `nvidia-smi` reports `No devices were found`. The device plugin logs `No devices found. Waiting indefinitely.`, and restarting it changes nothing. The bootstrap refused to report success and the stack failed with the counts it observed |
 | 2026-09-18 | `eu-south-2` (zone b) | — | `g7.12xlarge` | 1 | `Deep Learning Base OSS Nvidia Driver GPU AMI (Amazon Linux 2023) 20260916` | **The same instance type, driven correctly by a different AMI.** `nvidia-smi` reports driver `595.91.07`, `NVIDIA UNIX Open Kernel Module`, and two `NVIDIA RTX PRO 4500 Blackwell Server Edition` GPUs with 32 GiB each. This is a plain EC2 instance, not a node: the Deep Learning AMI carries no kubelet, so it cannot be used as a node AMI as-is |
 
-| 2026-09-18 | `eu-south-2` (zone b) | 1.36 | `g7.12xlarge` | 2 | `awsome-distributed-ai-eks-al2023-1.36-1-20260918080154`, built by `ami/` on the EKS 1.36 AL2023 **standard** parent with `nvidia-open-595.91.07` and the NVIDIA container toolkit | **Works.** Node group `AmiType: CUSTOM`, both nodes `Ready` and advertising `nvidia.com/gpu: 2` and `vpc.amazonaws.com/efa: 1`; the bootstrap passed on its first poll (`2 of 2 node(s) Ready and advertising 2 GPU, 1 EFA; want 2`). From a pod holding both GPUs: `NVIDIA RTX PRO 4500 Blackwell Server Edition, 595.91.07, 32623 MiB` twice, `/dev/infiniband/uverbs0` present, `fi_info -p efa` reporting provider `efa` on domain `rdmap51s0-rdm`, and `/dev/md127` 1.8 TiB at `/mnt/k8s-disks/0` |
+| 2026-09-18 | `eu-south-2` (zone b) | 1.36 | `g7.12xlarge` | 2 | `awsome-distributed-ai-eks-al2023-1.36-1-20260918083705`, built by `ami/` on the EKS 1.36 AL2023 **standard** parent with `nvidia-open-595.91.07` and `nvidia-container-toolkit-1.20.0-1` | **Works.** Node group `AmiType: CUSTOM`, both nodes `Ready` and advertising `nvidia.com/gpu: 2` and `vpc.amazonaws.com/efa: 1`; the bootstrap passed on its first poll (`2 of 2 node(s) Ready and advertising 2 GPU, 1 EFA; want 2`). From a pod holding both GPUs: `NVIDIA RTX PRO 4500 Blackwell Server Edition, 595.91.07, 32623 MiB` twice, `/dev/infiniband/uverbs0` present, `fi_info -p efa` reporting provider `efa` on domain `rdmap51s0-rdm`, and `/dev/md127` 1.8 TiB at `/mnt/k8s-disks/0` |
 
 Two things a Region can take away:
 
@@ -87,7 +88,11 @@ Two things a Region can take away:
   correctly while the device plugin fails with `Failed to initialize NVML: ERROR_LIBRARY_NOT_FOUND`,
   because nothing injects the driver libraries into the container. The runtime is registered with
   containerd from the node's own `NodeConfig`, since `nodeadm` writes that file at every boot.
-- **`g7e` remains unobtainable, and the GPU was never the reason for either family.** The same
+- **`g7e` remains unobtainable, and for `g7` the GPU was never the reason.** The same requirement is
+  inferred for `g7e` from the GPU generation it shares with `g7`, not measured: no `g7e` capacity was
+  obtainable in any Region tried. The templates fail closed on that inference — both families require
+  `NodeAmiId` — because the cost of being wrong is one parameter nobody needed, against a cluster
+  whose GPU nodes never advertise a GPU. The same
   `g7.12xlarge` shows both of its RTX PRO 4500 Blackwell GPUs under driver `595.91.07` with the open
   kernel module, from the Deep Learning Base OSS Nvidia Driver AMI. What the EKS-optimised AL2023
   NVIDIA AMI ships is `580.178.04` with the proprietary module, and that combination does not

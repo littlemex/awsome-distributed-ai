@@ -18,12 +18,14 @@ Select one target explicitly. `AWS_REGION` defaults to `us-east-1`.
 AWS_REGION=us-east-1 make ami_eks_ubuntu2404
 ```
 
-`ami_eks_al2023` takes four optional overrides: `EKS_VERSION`, `INSTANCE_TYPE`,
-`NVIDIA_DRIVER_VERSION` and `NVIDIA_KERNEL_MODULES` (`proprietary` or `open`). The build host has to
+`ami_eks_al2023` takes five optional overrides: `EKS_VERSION`, `INSTANCE_TYPE`,
+`NVIDIA_DRIVER_VERSION`, `NVIDIA_KERNEL_MODULES` with the value `proprietary` or `open`, and
+`PCLUSTER_AMI_REGION`. The build host has to
 be an instance type whose GPU the chosen driver supports, because the playbook asserts that
 `nvidia-smi` reports the pinned version — which makes the build its own test. The RTX PRO GPUs in the
-`g7` and `g7e` families need the open kernel modules; the EKS-optimised AL2023 NVIDIA AMI ships the
-proprietary ones and does not enumerate those GPUs.
+`g7` family need the open kernel modules: the EKS-optimised AL2023 NVIDIA AMI ships the proprietary
+ones and does not enumerate them. The same is assumed for `g7e`, which shares the GPU generation and
+which no Region tried had capacity for.
 
 ```bash
 AWS_REGION=eu-south-2 EKS_VERSION=1.36 INSTANCE_TYPE=g7.12xlarge \
@@ -44,7 +46,7 @@ Public SSM parameters provide 5 parent AMIs. The ParallelCluster parent is selec
 | `ami_ec2_ubuntu2404` | Canonical Ubuntu Server 24.04 LTS | EFA 1.50.0. The workload owns CUDA, NCCL, and frameworks. | [Canonical EC2 image discovery](https://documentation.ubuntu.com/aws/aws-how-to/instances/find-ubuntu-images/) |
 | `ami_ec2_ubuntu2404_dlami` | Base OSS NVIDIA Driver GPU DLAMI, Ubuntu 24.04 | Validates the parent NVIDIA driver and does not replace parent libraries. | [AWS Deep Learning Base GPU AMI release notes](https://docs.aws.amazon.com/dlami/latest/devguide/appendix-ami-release-notes.html) |
 | `ami_pcluster_ubuntu2404` | AWS ParallelCluster 3.15.1, Ubuntu 24.04 | Retains the official ParallelCluster software stack and validates its image marker. | [AWS ParallelCluster 3.15.1 release notes](https://github.com/aws/aws-parallelcluster/wiki/3.15.1) |
-| `ami_eks_al2023` | EKS 1.35 optimized AL2023 standard | Installs an NVIDIA driver from the AL2023 NVIDIA repository, with the kernel module flavour selectable: `nvidia-driver-cuda` (default, 580.126.09) or `nvidia-open`. Kubernetes bootstrap remains owned by `nodeadm`. | [Amazon EKS AMI releases](https://github.com/awslabs/amazon-eks-ami/releases) and [AL2023 NVIDIA advisory](https://alas.aws.amazon.com/AL2023/ALAS2023NVIDIA-2026-271.html) |
+| `ami_eks_al2023` | EKS optimized AL2023 standard, version from `EKS_VERSION` | Installs a pinned NVIDIA driver from the AL2023 NVIDIA repository with the kernel module flavour selectable, `nvidia-driver-cuda` by default or `nvidia-open`, plus the pinned NVIDIA container toolkit. Kubernetes bootstrap remains owned by `nodeadm`. | [Amazon EKS AMI releases](https://github.com/awslabs/amazon-eks-ami/releases) and [AL2023 NVIDIA advisory](https://alas.aws.amazon.com/AL2023/ALAS2023NVIDIA-2026-271.html) |
 | `ami_eks_ubuntu2404` | Canonical Ubuntu 24.04 EKS 1.35 | Installs EFA 1.50.0 in minimal mode: EFA kernel module and `rdma-core` only. GPU Operator owns NVIDIA; workload images own CUDA, NCCL, Libfabric, MPI, and aws-ofi-nccl. | [Canonical EKS image discovery](https://documentation.ubuntu.com/aws/aws-how-to/instances/find-ubuntu-images/) and [EFA release notes](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-changelog.html) |
 | `ami_pcs_ubuntu2404` | Base OSS NVIDIA Driver GPU DLAMI, Ubuntu 24.04 | Adds AWS PCS Agent 1.5.1-1 and AWS PCS Slurm 25.11.7-3 with official installers. Use this AMI with the Slurm 25.11 series. `architectures/aws-pcs` installs Enroot/Pyxis at first boot when `InstallEnrootPyxis=true`. | [DLAMI release notes](https://docs.aws.amazon.com/dlami/latest/devguide/appendix-ami-release-notes.html), [AWS PCS custom AMI guide](https://docs.aws.amazon.com/pcs/latest/userguide/working-with_ami_custom.html), and [installer checksums](https://docs.aws.amazon.com/pcs/latest/userguide/working-with_ami_installers.html#working-with_ami_installers_verify) |
 

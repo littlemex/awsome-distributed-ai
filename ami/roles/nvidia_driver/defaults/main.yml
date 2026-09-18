@@ -4,4 +4,5 @@ nvidia_driver_package_version: "580.126.09-1.amzn2023"
 # g7e families need: with the proprietary module loaded, nvidia-smi enumerates no devices on those
 # instances even though the driver loads and creates the device nodes.
 nvidia_driver_kernel_modules: proprietary
+nvidia_container_toolkit_version: "1.20.0-1"
 nvidia_driver_allow_reboot: true

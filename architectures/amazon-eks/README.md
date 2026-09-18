@@ -83,6 +83,11 @@ The stack name becomes the cluster name. `PrimarySubnetAZ` has to be the Availab
 capacity reservation when you use one: EFA traffic and the cluster placement group stay inside one
 zone. Expect 20 to 25 minutes, most of it the cluster and the node groups.
 
+The default `GpuInstanceType` is `g7e.12xlarge`, and that family needs a node AMI you build, so the
+command above also needs `ParameterKey=NodeAmiId,ParameterValue=ami-…`. Section 3 says which families
+that applies to and how to build one; a stack submitted without it is rejected immediately rather
+than after the nodes are running.
+
 Then:
 
 ```bash
@@ -177,6 +182,7 @@ Every parameter, with its default and what it affects, is in
 | Parameter | Default | Notes |
 |---|---|---|
 | `PrimarySubnetAZ` | required | Zone of the GPU nodes and of the capacity reservation |
+| `NodeAmiId` | required for `g7` and `g7e` | Node AMI built with [`ami/`](../../ami). Those families' GPUs are not enumerated by the EKS-optimised AMI's driver, and the stack is rejected at submit time without one |
 | `SecondarySubnetAZ` | required | Second zone, control plane only. Must differ from the first |
 | `GpuInstanceType` | `g7e.12xlarge` | See section 3 |
 | `GpuNodeCount` | `2` | Disaggregated inference needs at least 2. `0` is a smoke test, not a deploy |

@@ -182,16 +182,22 @@ Rules:
           NodeAmiId requires ClusterEndpoint, ClusterCertificateAuthority and ClusterServiceCidr.
           A launch template that names an AMI stops EKS from merging its bootstrap user data, so the
           node has to be told how to reach the cluster.
+  # Both RTX PRO families are listed. That the driver in the EKS-optimised AL2023 NVIDIA AMI does not
+  # enumerate these GPUs was measured on g7.12xlarge; for g7e it is inferred from the same GPU
+  # generation, because no g7e capacity was obtainable. The rule fails closed on purpose: the cost of
+  # being wrong about g7e is one parameter nobody needed, and the cost of leaving it out is a cluster
+  # whose GPU nodes never advertise a GPU.
   RtxProFamiliesNeedACustomAmi:
     RuleCondition: !Contains
-      - [g7.12xlarge, g7.24xlarge, g7.48xlarge]
+      - [g7.12xlarge, g7.24xlarge, g7.48xlarge, g7e.12xlarge, g7e.24xlarge, g7e.48xlarge]
       - !Ref GpuInstanceType
     Assertions:
       - Assert: !Not [!Equals [!Ref NodeAmiId, ""]]
         AssertDescription: >-
-          The g7 family needs NodeAmiId. Its RTX PRO GPUs are not enumerated by the driver in the
-          EKS-optimised AL2023 NVIDIA AMI, so a node group without a custom AMI joins, advertises its
-          EFA interface and never advertises nvidia.com/gpu. See docs/COMPATIBILITY.md.
+          The g7 and g7e families need NodeAmiId. Their RTX PRO GPUs are not enumerated by the driver
+          in the EKS-optimised AL2023 NVIDIA AMI, so a node group without a custom AMI joins,
+          advertises its EFA interface and never advertises nvidia.com/gpu. Build one with ami/ in
+          this repository; see docs/COMPATIBILITY.md.
   PrePullNeedsNodes:
     Assertions:
       - Assert: !Or
