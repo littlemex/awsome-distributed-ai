@@ -153,10 +153,12 @@ Mappings:
   # SecondaryDeviceIndex = DeviceIndex used on cards 1..N-1
   # Verified against describe-instance-types in us-east-1 and us-west-2 on 2026-09-16.
   NicLayout:
-    # g7 (RTX PRO 4500) is deliberately absent from GpuInstanceType.AllowedValues: the nodes join and
-    # advertise their EFA interface, but the NVIDIA driver in the EKS AL2023 NVIDIA AMI for 1.36
-    # (580.178.04) does not enumerate the GPU, so nvidia.com/gpu never appears. The layout is kept
-    # here for whoever revisits the family with a newer AMI. See docs/COMPATIBILITY.md.
+    # g7 (RTX PRO 4500) is deliberately absent from GpuInstanceType.AllowedValues. The nodes join and
+    # advertise their EFA interface, and nvidia.com/gpu never appears: the EKS AL2023 NVIDIA AMI for
+    # 1.36 carries driver 580.178.04 with the proprietary module, which does not enumerate this GPU.
+    # The GPU itself is fine -- the same instance shows both GPUs under driver 595.91.07 with the open
+    # kernel module. Offering the type here would need a node AMI with that driver, which is not what
+    # AmiType: AL2023_x86_64_NVIDIA resolves to. The layout stays as data. See docs/COMPATIBILITY.md.
     g7.12xlarge:
       Cards: "1"
       EfaInterfaces: "1"
