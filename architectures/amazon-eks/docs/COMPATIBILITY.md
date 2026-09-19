@@ -81,27 +81,25 @@ recording the result in the table below.
 
 Two things a Region can take away:
 
-- **`g7` works with a node AMI built here, and only with one.** The first attempt used the
-  EKS-optimised AMI and is the row above from 2026-09-16. What the working AMI adds is two things, and
-  the second was found by deploying the first version of it: driver `595.91.07` with the open kernel
-  modules, **and** the NVIDIA container toolkit. Without the toolkit the host runs `nvidia-smi`
-  correctly while the device plugin fails with `Failed to initialize NVML: ERROR_LIBRARY_NOT_FOUND`,
-  because nothing injects the driver libraries into the container. The runtime is registered with
-  containerd from the node's own `NodeConfig`, since `nodeadm` writes that file at every boot.
-- **`g7e` remains unobtainable, and for `g7` the GPU was never the reason.** The same requirement is
-  inferred for `g7e` from the GPU generation it shares with `g7`, not measured: no `g7e` capacity was
-  obtainable in any Region tried. The templates fail closed on that inference — both families require
-  `NodeAmiId` — because the cost of being wrong is one parameter nobody needed, against a cluster
-  whose GPU nodes never advertise a GPU. The same
-  `g7.12xlarge` shows both of its RTX PRO 4500 Blackwell GPUs under driver `595.91.07` with the open
-  kernel module, from the Deep Learning Base OSS Nvidia Driver AMI. What the EKS-optimised AL2023
-  NVIDIA AMI ships is `580.178.04` with the proprietary module, and that combination does not
-  enumerate the GPU. As of 2026-09-18 the newest EKS AL2023 NVIDIA release for 1.36 is
-  `v20260911`, and SSM offers no `nvidia-open` variant and no AL2027 EKS AMI, so the paths that could
-  close this are: an EKS AMI release with a driver at or above 595 (or the open module), a custom node
-  AMI built from `amazon-eks-ami` with that driver, or the Bottlerocket NVIDIA variant if its driver
-  is new enough. All three are outside these templates, which is why the type is not offered rather
-  than worked around.
+- **`g7` works with a node AMI built here, and only with one.** That AMI carries two things: driver
+  `595.91.07` with the open kernel modules, **and** the NVIDIA container toolkit. Without the
+  toolkit the host runs `nvidia-smi` correctly while the device plugin fails with `Failed to
+  initialize NVML: ERROR_LIBRARY_NOT_FOUND`, because nothing injects the driver libraries into the
+  container. The runtime is registered with containerd from the node's own `NodeConfig`, since
+  `nodeadm` writes that file at every boot.
+- **For `g7` the GPU was never the reason, and for `g7e` the requirement is inferred.** It follows
+  from the GPU generation `g7e` shares with `g7` rather than from a run of that family. The
+  templates fail closed on that inference — both families require `NodeAmiId` — because the cost of
+  being wrong is one parameter nobody needed, against a cluster whose GPU nodes never advertise a
+  GPU. The same `g7.12xlarge` shows both of its RTX PRO 4500 Blackwell GPUs under driver `595.91.07`
+  with the open kernel module, from the Deep Learning Base OSS Nvidia Driver AMI. What the
+  EKS-optimised AL2023 NVIDIA AMI ships is `580.178.04` with the proprietary module, and that
+  combination does not enumerate the GPU. As of 2026-09-18 the newest EKS AL2023 NVIDIA release for
+  1.36 is `v20260911`, and SSM offers no `nvidia-open` variant and no AL2027 EKS AMI, so the paths
+  that could close this are: an EKS AMI release with a driver at or above 595 (or the open module),
+  a custom node AMI built from `amazon-eks-ami` with that driver, or the Bottlerocket NVIDIA variant
+  if its driver is new enough. All three are outside these templates, which is why the type is not
+  offered rather than worked around.
 - **`m6i` is not offered in `eu-south-2`.** The system node group failed with `Unsupported - The
   requested configuration is currently not supported`, which names neither the type nor the Region.
   The default `SystemInstanceType` is now `m5.xlarge` for breadth of coverage, and PARAMETERS.md
