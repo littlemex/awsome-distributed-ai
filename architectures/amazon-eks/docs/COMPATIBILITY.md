@@ -72,11 +72,11 @@ recording the result in the table below.
 | Date | Region | Kubernetes | Instance type | Nodes | AMI release | Result |
 |---|---|---|---|---|---|---|
 | 2026-09-16 | `us-west-2` (zone b) | 1.36 | `g4dn.8xlarge` | 2 | `1.36.3-20260911` | Both nodes `Ready`, each advertising `nvidia.com/gpu: 1` and `vpc.amazonaws.com/efa: 1`; `nvidia-smi` from a pod holding a GPU reports `Tesla T4, 580.178.04`; local NVMe assembled as `/dev/md127` (`raid0`, 838 GiB) at `/mnt/k8s-disks/0` |
-| 2026-09-16 | `us-west-2` (zones a, b) | 1.36 | `g7e.12xlarge` | 2 | — | Not launched. `InsufficientInstanceCapacity` in both zones, and a capacity reservation for two instances was refused in every zone of `us-west-2`, `us-east-1`, `us-east-2` and `eu-south-2` |
+| 2026-09-16 | `us-west-2` (zones a, b) | 1.36 | `g7e.12xlarge` | 2 | — | Not launched: no capacity in either zone, reported as `InsufficientInstanceCapacity` |
 | 2026-09-16 | `eu-south-2` (zone b) | 1.36 | `g7.12xlarge` | 2 | `1.36.3-20260911` | **Launched; the GPU is not enumerated by this AMI.** Both nodes joined, went `Ready` and advertised `vpc.amazonaws.com/efa: 1`, and `nvidia.com/gpu` never appeared. On the host the driver is loaded (`NVRM 580.178.04`), `/dev/nvidia0` and `/dev/nvidia1` exist, `lspci` shows two `NVIDIA Corporation Device 2c3a` 3D controllers — and `nvidia-smi` reports `No devices were found`. The device plugin logs `No devices found. Waiting indefinitely.`, and restarting it changes nothing. The bootstrap refused to report success and the stack failed with the counts it observed |
 | 2026-09-18 | `eu-south-2` (zone b) | — | `g7.12xlarge` | 1 | `Deep Learning Base OSS Nvidia Driver GPU AMI (Amazon Linux 2023) 20260916` | **The same instance type, driven correctly by a different AMI.** `nvidia-smi` reports driver `595.91.07`, `NVIDIA UNIX Open Kernel Module`, and two `NVIDIA RTX PRO 4500 Blackwell Server Edition` GPUs with 32 GiB each. This is a plain EC2 instance, not a node: the Deep Learning AMI carries no kubelet, so it cannot be used as a node AMI as-is |
 
-Two things that a Region can take away, both found by deploying into a Region for the first time:
+Two things a Region can take away:
 
 - **`g7` and `g7e` are not usable through this path today, and the GPU is not the reason.** The same
   `g7.12xlarge` shows both of its RTX PRO 4500 Blackwell GPUs under driver `595.91.07` with the open
