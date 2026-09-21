@@ -1,0 +1,107 @@
+name: Publish Amazon EKS Templates
+
+# One workflow per architecture, reading one manifest. The staging, validation
+# and publish steps operate on the whole manifest, so a shared workflow would
+# let a broken template in one architecture stop another from publishing.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'architectures/amazon-eks/**'
+      - '.github/amazon-eks-template-publish-manifest.yml'
+      - '.github/scripts/stage-template-publish.py'
+      - '.github/workflows/publish-amazon-eks-templates.yml'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  # Same publishing role as the other architectures: one bucket, one role, and
+  # the keys separated by namespace rather than by credential.
+  AWS_ROLE_ARN: arn:aws:iam::159553542841:role/adai-template-publisher
+  TEMPLATE_BUCKET: awsome-distributed-ai
+  TEMPLATE_PREFIX: templates/
+  PUBLISH_MANIFEST: .github/amazon-eks-template-publish-manifest.yml
+  STAGE_DIR: .template-publish-stage
+  CFN_LIST: .template-publish-cfn-files.txt
+  SHELL_LIST: .template-publish-shell-files.txt
+  OBSOLETE_LIST: .template-publish-obsolete-keys.txt
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    name: Validate and publish templates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The same group as the other publishing workflows, on purpose: concurrency
+    # groups are repository-scoped, so naming the same one serialises every
+    # publish to this bucket without either workflow referring to the other.
+    concurrency:
+      group: publish-architecture-templates
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install validation dependencies
+        run: python -m pip install --upgrade pyyaml
+
+      - name: Stage publish manifest
+        run: |
+          python .github/scripts/stage-template-publish.py \
+            --manifest "$PUBLISH_MANIFEST" \
+            --stage-dir "$STAGE_DIR" \
+            --cfn-list "$CFN_LIST" \
+            --shell-list "$SHELL_LIST" \
+            --obsolete-list "$OBSOLETE_LIST"
+
+      - name: Validate shell scripts
+        run: |
+          if [ -s "$SHELL_LIST" ]; then
+            while IFS= read -r script; do
+              bash -n "$script"
+            done < "$SHELL_LIST"
+          fi
+
+      - name: Run Amazon EKS template lint
+        run: bash architectures/amazon-eks/tests/lint-templates.sh
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate CloudFormation templates
+        run: |
+          if [ -s "$CFN_LIST" ]; then
+            while IFS= read -r template; do
+              aws cloudformation validate-template --template-body "file://$template" >/dev/null
+            done < "$CFN_LIST"
+          fi
+
+      - name: Publish to S3
+        # --acl public-read: the bucket serves templates via per-object ACL, not a
+        # bucket policy, so objects must carry AllUsers:READ to be anonymously
+        # fetchable by the launch URLs and nested-stack TemplateURLs. Requires
+        # s3:PutObjectAcl on the OIDC role.
+        run: aws s3 sync "$STAGE_DIR/" "s3://${TEMPLATE_BUCKET}/${TEMPLATE_PREFIX}" --acl public-read --no-progress
+
+      - name: Remove obsolete S3 keys
+        run: |
+          if [ -s "$OBSOLETE_LIST" ]; then
+            while IFS= read -r key; do
+              aws s3 rm "s3://${TEMPLATE_BUCKET}/${TEMPLATE_PREFIX}${key}"
+            done < "$OBSOLETE_LIST"
+          fi

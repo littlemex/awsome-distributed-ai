@@ -1,13 +1,50 @@
 ---
 # yamllint disable rule:line-length
+- name: Require a known kernel module flavour
+  ansible.builtin.assert:
+    that:
+      - nvidia_driver_kernel_modules in ["proprietary", "open"]
+    fail_msg: >-
+      nvidia_driver_kernel_modules must be "proprietary" or "open",
+      got "{{ nvidia_driver_kernel_modules }}"
+
 - name: Enable AL2023 NVIDIA repository
   ansible.builtin.dnf:
     name: nvidia-release
     state: present
 
-- name: Install NVIDIA data-center driver
+- name: Install NVIDIA data-center driver with the proprietary kernel modules
   ansible.builtin.dnf:
     name: "nvidia-driver-cuda-{{ nvidia_driver_package_version }}"
+    state: present
+  when: nvidia_driver_kernel_modules == "proprietary"
+
+# nvidia-open pulls kmod-nvidia-open-dkms and the matching user-space libraries. The two flavours
+# provide the same kernel module name, so a host installs one or the other, never both.
+- name: Install NVIDIA data-center driver with the open kernel modules
+  ansible.builtin.dnf:
+    name: "nvidia-open-{{ nvidia_driver_package_version }}"
+    state: present
+  when: nvidia_driver_kernel_modules == "open"
+
+# A driver alone does not make a container see a GPU: the device plugin fails with
+# "Failed to initialize NVML: ERROR_LIBRARY_NOT_FOUND" until the container toolkit injects the
+# driver libraries. The toolkit lives in NVIDIA's libnvidia-container repository, not in the CUDA
+# one that nvidia-release configures.
+- name: Add NVIDIA container toolkit repository
+  ansible.builtin.get_url:
+    url: https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo
+    dest: /etc/yum.repos.d/nvidia-container-toolkit.repo
+    mode: "0644"
+
+- name: Import the NVIDIA container toolkit signing key
+  ansible.builtin.rpm_key:
+    key: https://nvidia.github.io/libnvidia-container/gpgkey
+    state: present
+
+- name: Install NVIDIA container toolkit
+  ansible.builtin.dnf:
+    name: "nvidia-container-toolkit-{{ nvidia_container_toolkit_version }}"
     state: present
 
 - name: Reboot after NVIDIA driver installation
@@ -18,8 +55,90 @@
   ansible.builtin.command: nvidia-smi --query-gpu=driver_version --format=csv,noheader
   changed_when: false
   register: nvidia_driver_version_output
+  when: nvidia_driver_verify_gpu | bool
 
 - name: Require pinned NVIDIA driver version
   ansible.builtin.assert:
     that:
       - nvidia_driver_version_output.stdout_lines | unique == [nvidia_driver_package_version | regex_replace('-[0-9]+\\.amzn2023$', '')]
+  when: nvidia_driver_verify_gpu | bool
+
+# Without a GPU on the build host the driver cannot be exercised, so assert what can be: the
+# package the flavour selects is installed at the pinned version.
+# The whole pin, not a prefix of it: a substring test passes 595.91.07-2.amzn2023 for a pin of
+# 595.91.07-1.amzn2023, which is a different build of the driver.
+- name: Verify the installed driver package
+  ansible.builtin.command: >-
+    rpm -q --qf '%{VERSION}-%{RELEASE}'
+    {{ 'nvidia-open' if nvidia_driver_kernel_modules == 'open' else 'nvidia-driver-cuda' }}
+  changed_when: false
+  register: nvidia_driver_package_query
+  when: not (nvidia_driver_verify_gpu | bool)
+
+- name: Require the pinned driver package
+  ansible.builtin.assert:
+    that:
+      - nvidia_driver_package_query.stdout == nvidia_driver_package_version
+    fail_msg: >-
+      expected {{ nvidia_driver_package_version }},
+      found {{ nvidia_driver_package_query.stdout }}
+  when: not (nvidia_driver_verify_gpu | bool)
+
+# An installed package is not a loadable module: the DKMS build can fail, or succeed against a kernel
+# the image does not boot. Both leave a host whose driver never loads, which on a GPU node reads as
+# "the driver does not enumerate the hardware" rather than as a build that should have failed.
+- name: Verify the kernel module is built for the running kernel
+  ansible.builtin.command: modinfo -k {{ ansible_kernel }} nvidia
+  changed_when: false
+  register: nvidia_driver_modinfo
+  failed_when: nvidia_driver_modinfo.rc != 0
+  when: not (nvidia_driver_verify_gpu | bool)
+
+- name: Require the module version to match the pin
+  ansible.builtin.assert:
+    that:
+      - nvidia_driver_modinfo.stdout is search(nvidia_driver_package_version | regex_replace('-[0-9]+\\.amzn2023$', ''))
+    fail_msg: >-
+      the nvidia module built for kernel {{ ansible_kernel }} does not report
+      {{ nvidia_driver_package_version | regex_replace('-[0-9]+\\.amzn2023$', '') }}
+  when: not (nvidia_driver_verify_gpu | bool)
+
+# EC2 Image Builder reaches the build instance through Systems Manager, so an image build from this
+# parent needs the agent present. Recorded rather than asserted: a Packer build does not need it.
+- name: Record whether the Systems Manager agent is present
+  ansible.builtin.command: rpm -q amazon-ssm-agent
+  changed_when: false
+  failed_when: false
+  register: nvidia_driver_ssm_agent_query
+
+- name: Report the Systems Manager agent
+  ansible.builtin.debug:
+    msg: "amazon-ssm-agent: {{ nvidia_driver_ssm_agent_query.stdout | default('not installed') }}"
+
+- name: Verify the container runtime shim
+  ansible.builtin.stat:
+    path: /usr/bin/nvidia-container-runtime
+  register: nvidia_container_runtime_binary
+
+- name: Require the container runtime shim to be an executable file
+  ansible.builtin.assert:
+    that:
+      - nvidia_container_runtime_binary.stat.exists
+      - nvidia_container_runtime_binary.stat.isreg
+      - nvidia_container_runtime_binary.stat.xusr
+    fail_msg: >-
+      /usr/bin/nvidia-container-runtime is missing or is not an executable file. A node built from
+      this AMI would run the device plugin without NVML and advertise no GPUs.
+
+- name: Verify the container toolkit package
+  ansible.builtin.command: rpm -q --qf '%{VERSION}-%{RELEASE}' nvidia-container-toolkit
+  changed_when: false
+  register: nvidia_container_toolkit_query
+
+- name: Require the pinned container toolkit
+  ansible.builtin.assert:
+    that:
+      - nvidia_container_toolkit_query.stdout == nvidia_container_toolkit_version
+    fail_msg: >-
+      expected nvidia-container-toolkit {{ nvidia_container_toolkit_version }},
+      found {{ nvidia_container_toolkit_query.stdout }}

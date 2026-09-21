@@ -18,8 +18,18 @@ ami_ec2_ubuntu2404_dlami:
 	packer build -only 'ec2-ubuntu2404-dlami.*' -var aws_region=${AWS_REGION} -var "ami_version=1" packer-ami.pkr.hcl | tee ec2-ubuntu2404-dlami_ami.log
 ami_pcluster_ubuntu2404:
 	packer build -only 'pcluster-ubuntu2404.*' -var aws_region=${AWS_REGION} -var "ami_version=1" packer-ami.pkr.hcl | tee pcluster-ubuntu2404_ami.log
+# Every override below is optional and is only passed when set, so packer-ami.pkr.hcl stays the single
+# place the defaults live. README.md lists them and what each one is for.
 ami_eks_al2023:
-	packer build -only 'eks-al2023.*' -var aws_region=${AWS_REGION} -var "ami_version=1" packer-ami.pkr.hcl | tee eks-al2023_ami.log
+	packer build -only 'eks-al2023.*' -var aws_region=${AWS_REGION} -var "ami_version=1" \
+	  $(if $(EKS_VERSION),-var eks_version=$(EKS_VERSION),) \
+	  $(if $(INSTANCE_TYPE),-var instance_type=$(INSTANCE_TYPE),) \
+	  $(if $(NVIDIA_DRIVER_VERSION),-var nvidia_driver_package_version=$(NVIDIA_DRIVER_VERSION),) \
+	  $(if $(NVIDIA_KERNEL_MODULES),-var nvidia_driver_kernel_modules=$(NVIDIA_KERNEL_MODULES),) \
+	  $(if $(NVIDIA_CONTAINER_TOOLKIT_VERSION),-var nvidia_container_toolkit_version=$(NVIDIA_CONTAINER_TOOLKIT_VERSION),) \
+	  $(if $(NVIDIA_VERIFY_GPU),-var nvidia_driver_verify_gpu=$(NVIDIA_VERIFY_GPU),) \
+	  $(if $(PCLUSTER_AMI_REGION),-var pcluster_ami_region=$(PCLUSTER_AMI_REGION),) \
+	  packer-ami.pkr.hcl | tee eks-al2023_ami.log
 ami_eks_ubuntu2404:
 	packer build -only 'eks-ubuntu2404.*' -var aws_region=${AWS_REGION} -var "ami_version=1" packer-ami.pkr.hcl | tee eks-ubuntu2404_ami.log
 ami_pcs_ubuntu2404:

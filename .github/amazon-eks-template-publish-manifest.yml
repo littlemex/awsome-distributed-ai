@@ -1,0 +1,26 @@
+# Files published to s3://awsome-distributed-ai/templates by
+# .github/workflows/publish-amazon-eks-templates.yml.
+#
+# One manifest per architecture, each owning the keys under its own namespace.
+# A shared manifest would mean this architecture's templates are staged and
+# re-uploaded by another architecture's run, and that a failure in either one
+# stops the other from publishing: the staging, validation and sync steps read
+# the whole manifest, not only the entries that changed.
+bucket: awsome-distributed-ai
+prefix: templates/
+# Nothing to retire: this architecture has only ever published under the
+# amazon-eks/ namespace, so there are no flat keys a deployed stack resolves
+# against. Add a key here to delete it, and only once no deployed stack
+# references it.
+obsolete_keys: []
+entries:
+  - source: architectures/amazon-eks/assets/eks-gpu-cluster-deploy-all.yaml
+    key: amazon-eks/eks-gpu-cluster-deploy-all.yaml
+  - source: architectures/amazon-eks/assets/eks-cluster-prerequisites.yaml
+    key: amazon-eks/eks-cluster-prerequisites.yaml
+  - source: architectures/amazon-eks/assets/eks-cluster.yaml
+    key: amazon-eks/eks-cluster.yaml
+  - source: architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml
+    key: amazon-eks/eks-add-gpu-nodegroup.yaml
+  - source: architectures/amazon-eks/assets/eks-gpu-node-ami.yaml
+    key: amazon-eks/eks-gpu-node-ami.yaml

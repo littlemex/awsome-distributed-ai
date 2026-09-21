@@ -31,6 +31,12 @@ variable "aws_region" {
   type    = string
   default = "us-east-1"
 }
+# Packer evaluates every data source here even when -only selects one build, so a Region with no
+# ParallelCluster image fails a lookup the selected build does not use. Empty means the build Region.
+variable "pcluster_ami_region" {
+  type    = string
+  default = ""
+}
 variable "instance_type" {
   type    = string
   default = "g4dn.16xlarge"
@@ -39,9 +45,31 @@ variable "inventory_directory" {
   type    = string
   default = "inventory"
 }
+variable "nvidia_driver_package_version" {
+  type    = string
+  default = "580.126.09-1.amzn2023"
+}
+variable "nvidia_container_toolkit_version" {
+  type        = string
+  default     = ""
+  description = "NVIDIA container toolkit version. Empty keeps the role default."
+}
+
+variable "nvidia_driver_verify_gpu" {
+  type        = string
+  default     = "true"
+  description = "Whether the build asserts nvidia-smi on the build instance. Set to false to build on an instance type without a GPU."
+}
+
+# proprietary | open. See the eks-al2023 row in README.md.
+variable "nvidia_driver_kernel_modules" {
+  type    = string
+  default = "proprietary"
+}
 
 locals {
-  timestamp         = regex_replace(timestamp(), "[- TZ:]", "")
+  timestamp            = regex_replace(timestamp(), "[- TZ:]", "")
+  pcluster_ami_region  = var.pcluster_ami_region != "" ? var.pcluster_ami_region : var.aws_region
   ubuntu_server_ssm = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
   dlami_ssm         = "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-24.04/latest/ami-id"
   eks_al2023_ssm    = "/aws/service/eks/optimized-ami/${var.eks_version}/amazon-linux-2023/x86_64/standard/recommended/image_id"
@@ -75,7 +103,7 @@ data "amazon-ami" "pcluster_ubuntu2404" {
   }
   most_recent = true
   owners      = ["amazon"]
-  region      = var.aws_region
+  region      = local.pcluster_ami_region
 }
 
 source "amazon-ebs" "ec2-ubuntu2404" {
@@ -156,7 +184,7 @@ source "amazon-ebs" "eks-al2023" {
     volume_type           = "gp3"
     delete_on_termination = true
   }
-  tags = { OS = "AL2023", ParentAMI = data.amazon-parameterstore.eks_al2023.value, ParentLookup = local.eks_al2023_ssm }
+  tags = { OS = "AL2023", ParentAMI = data.amazon-parameterstore.eks_al2023.value, ParentLookup = local.eks_al2023_ssm, NvidiaDriver = var.nvidia_driver_package_version, NvidiaKernelModules = var.nvidia_driver_kernel_modules, EksVersion = var.eks_version }
 }
 source "amazon-ebs" "eks-ubuntu2404" {
   ami_name      = "${var.ami_name}-eks-ubuntu2404-${var.eks_version}-${var.ami_version}-${local.timestamp}"
@@ -234,6 +262,10 @@ build {
     ansible_env_vars    = ["ANSIBLE_SCP_EXTRA_ARGS='-O'"]
     playbook_file       = "playbook-eks-al2023.yml"
     inventory_directory = var.inventory_directory
+    extra_arguments = [
+      "--extra-vars",
+      "nvidia_driver_package_version=${var.nvidia_driver_package_version} nvidia_driver_kernel_modules=${var.nvidia_driver_kernel_modules} nvidia_driver_verify_gpu=${var.nvidia_driver_verify_gpu}${var.nvidia_container_toolkit_version == "" ? "" : " nvidia_container_toolkit_version=${var.nvidia_container_toolkit_version}"}",
+    ]
   }
 }
 build {
