@@ -167,7 +167,95 @@ already have takes those two.
 
 The second takes an EC2 Image Builder recipe you already maintain, as one value:
 `NodeImageRecipeArn`. The stack then creates no component and no recipe of its own, and contributes
-the build environment: the subnet and security group, the instance profile, and the wait.
+the build environment: the security group, the subnet it is passed, the instance profile unless one is
+supplied, and the wait. Reach for it
+when the payload is not a set of packages — built from source, a file laid down at a path, anything the
+first way's `dnf` cannot express. The recipe's parent image needs the Systems Manager
+agent, which Image Builder uses to reach the build instance. The image it produces needs `nodeadm`,
+which is what reads the `NodeConfig` the launch template passes; a component can install it, and the
+EKS-optimized AL2023 image the example below resolves already carries both.
+
+```yaml
+Parameters:
+  PayloadUrl:
+    Type: String
+    Description: Archive the build unpacks into /opt.
+
+Resources:
+  PayloadComponent:
+    Type: AWS::ImageBuilder::Component
+    Properties:
+      Name: node-payload
+      Platform: Linux
+      Version: 1.0.0
+      SupportedOsVersions: ["Amazon Linux 2023"]
+      Data: |
+        name: node-payload
+        schemaVersion: 1.0
+        parameters:
+          - PayloadUrl:
+              type: string
+              description: Archive the build unpacks into /opt.
+        phases:
+          - name: build
+            steps:
+              - name: InstallFromSource
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - |
+                      set -euo pipefail
+                      curl -fsSL -o /tmp/payload.tar.gz '{{ PayloadUrl }}'
+                      tar -C /opt -xzf /tmp/payload.tar.gz
+              - name: RebootAfterInstall
+                action: Reboot
+          - name: test
+            steps:
+              - name: RequirePayload
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - |
+                      set -euo pipefail
+                      test -x /opt/payload/bin/agent
+
+  Recipe:
+    Type: AWS::ImageBuilder::ImageRecipe
+    Properties:
+      Name: node-with-payload
+      Version: 1.0.0
+      ParentImage: !Sub "{{resolve:ssm:/aws/service/eks/optimized-ami/1.36/amazon-linux-2023/x86_64/standard/recommended/image_id}}"
+      Components:
+        - ComponentArn: !Ref PayloadComponent
+          Parameters:
+            - Name: PayloadUrl
+              Value: [!Ref PayloadUrl]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: {VolumeSize: 100, VolumeType: gp3, DeleteOnTermination: true}
+```
+
+Put the assertions in the `test` phase rather than in `build`: `test` runs on an instance launched from
+the produced image, so it asserts what the build publishes rather than the state of the build host.
+The example checks reboot-dependent state there, after the
+build phase and its reboot have finished. Image Builder resources are immutable per semantic version:
+editing the component document needs the component version raised, and changing which component a
+recipe carries or what it passes the component needs the recipe version raised.
+
+Pass the recipe's ARN as `NodeImageRecipeArn`. That build runs with an instance profile the stack
+creates, whose role carries `EC2InstanceProfileForImageBuilder` and `AmazonSSMManagedInstanceCore`, and
+a payload from a public repository needs no more than that. A payload the build has to authenticate for,
+from a private bucket or registry, needs permissions no template here can know: supply the profile with
+`NodeImageBuildInstanceProfile`, whose role grants what Image Builder, Systems Manager and the payload
+source require. Supply it
+by name rather than by ARN. Where the payload is in another account and its resource policy names the
+role, create the role first: the one this stack would create has a generated name that does not exist
+until the stack does, so the grant cannot be written ahead of the build.
+
+A build from a recipe you maintain logs under the log group Image Builder names after that recipe,
+which this stack does not own and does not delete, and it is not held to the assertion requirement the
+packages path enforces, because a recipe you maintain is responsible for its own `test` phase, which is
+why the example above has one.
 
 `NodeAmiId` takes an image built anywhere, by any tool. What it has to carry is the same either way:
 `nodeadm`, so EKS can bootstrap it against the `NodeConfig` the launch template passes; a driver that

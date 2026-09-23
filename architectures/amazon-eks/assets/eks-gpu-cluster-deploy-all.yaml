@@ -48,6 +48,7 @@ Metadata:
           - NodeImageRecipeArn
           - NodeImageVersion
           - NodeImageBuildInstanceType
+          - NodeImageBuildInstanceProfile
           - GpuNodeCount
           - GpuRootVolumeSize
           - CapacityReservationId
@@ -193,6 +194,17 @@ Parameters:
     Description: >-
       An EC2 Image Builder recipe to build. Use this when you already maintain one: the stack then
       contributes the build environment and nothing about the contents.
+  NodeImageBuildInstanceProfile:
+    Type: String
+    Default: ""
+    Description: >-
+      Name of the instance profile the image build runs with. Empty creates one whose role carries
+      EC2InstanceProfileForImageBuilder and AmazonSSMManagedInstanceCore, which is what a build that
+      authenticates for nothing it fetches needs. A payload from a private bucket or registry needs
+      permissions this template cannot know, and where its resource policy names the role, that name
+      has to exist before the build: that case supplies its own profile, whose role grants what
+      Image Builder, Systems Manager and the payload's source require.
+
   NodeImageVersion:
     Type: String
     Default: 1.0.0
@@ -339,6 +351,7 @@ Resources:
         VpcId: !GetAtt PrerequisitesStack.Outputs.VpcId
         PrivateSubnetId: !GetAtt PrerequisitesStack.Outputs.PrivateSubnetId
         BuildInstanceType: !Ref NodeImageBuildInstanceType
+        BuildInstanceProfileName: !Ref NodeImageBuildInstanceProfile
         KubernetesVersion: !Ref KubernetesVersion
         Packages: !Ref NodeImagePackages
         RepoPackages: !Ref NodeImageRepoPackages

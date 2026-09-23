@@ -43,6 +43,19 @@ Parameters:
       capacity is scarce and an image build does not need a GPU. The node-side check in
       eks-add-gpu-nodegroup.yaml is what proves the image drives its GPUs.
 
+  BuildInstanceProfileName:
+    Type: String
+    Default: ""
+    Description: >-
+      Name of the instance profile the build instance runs with. Empty creates a role carrying
+      EC2InstanceProfileForImageBuilder and AmazonSSMManagedInstanceCore with a profile around it,
+      which is what a build that authenticates for nothing it fetches needs. A payload from a private
+      bucket or registry needs permissions this template cannot know, and where its resource policy
+      names the role, a role this template creates cannot be granted before it exists, so that case
+      supplies its own. A supplied profile's role still has to grant what Image Builder needs
+      to act through the instance and what Systems Manager needs to reach it, which those two managed
+      policies are one way to express.
+
   KubernetesVersion:
     Type: String
     Default: "1.36"
@@ -142,10 +155,12 @@ Rules:
 Conditions:
   BringsOwnRecipe: !Not [!Equals [!Ref RecipeArn, ""]]
   ComposesOwnRecipe: !Equals [!Ref RecipeArn, ""]
+  CreatesBuildProfile: !Equals [!Ref BuildInstanceProfileName, ""]
 
 Resources:
-  # The build host needs egress to the package repositories and nothing else, and must not inherit the
-  # all-traffic self-reference that EFA requires between nodes.
+  # The build host needs egress for Systems Manager, Image Builder and wherever its payload comes from,
+  # and no ingress at all. Its own group rather than the node group's, which carries the all-traffic
+  # self-reference EFA requires between nodes.
   BuildSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -154,12 +169,13 @@ Resources:
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
-          Description: Package repositories over the NAT gateway
+          Description: Systems Manager, Image Builder and the payload's source, over the NAT gateway
       Tags:
         - {Key: Name, Value: !Sub "${AWS::StackName}-image-build"}
 
   BuildInstanceRole:
     Type: AWS::IAM::Role
+    Condition: CreatesBuildProfile
     Properties:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -173,6 +189,7 @@ Resources:
 
   BuildInstanceProfile:
     Type: AWS::IAM::InstanceProfile
+    Condition: CreatesBuildProfile
     Properties:
       Roles: [!Ref BuildInstanceRole]
 
@@ -349,7 +366,7 @@ Resources:
     Type: AWS::ImageBuilder::InfrastructureConfiguration
     Properties:
       Name: !Sub "${AWS::StackName}-build"
-      InstanceProfileName: !Ref BuildInstanceProfile
+      InstanceProfileName: !If [CreatesBuildProfile, !Ref BuildInstanceProfile, !Ref BuildInstanceProfileName]
       InstanceTypes: [!Ref BuildInstanceType]
       SubnetId: !Ref PrivateSubnetId
       SecurityGroupIds: [!Ref BuildSecurityGroup]
