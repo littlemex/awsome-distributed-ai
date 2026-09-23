@@ -73,29 +73,34 @@ Parameters:
       EKS AMI type for the system nodes. Not an enumeration: EKS validates the value.
   SystemInstanceType:
     Type: String
-    Default: m5.xlarge
+    Default: m7i.xlarge
     Description: >-
-      Instance type of the system node group. Any general-purpose type works; the default is chosen
-      for breadth of Region coverage rather than for performance, because a type that is not offered
-      in the Region fails the node group with an opaque "Unsupported - The requested configuration is
-      currently not supported".
+      Instance type of the system node group. Any general-purpose type works. The default is the
+      newest generation offered in every Region this architecture's GPU types appear in, because a
+      type the Region does not offer fails the node group with an opaque "Unsupported - The requested
+      configuration is currently not supported" that names neither the type nor the Region.
   SystemNodeCount:
     Type: Number
     Default: 2
     MinValue: 1
     MaxValue: 4
     Description: >-
-      Number of system nodes. Two by default so CoreDNS has two replicas on separate nodes, and
-      so the node-feature-discovery master the NVIDIA chart deploys has somewhere to run that is
-      not a tainted GPU node.
+      Number of nodes carrying the cluster's own workloads: CoreDNS, and the node-feature-discovery
+      master the NVIDIA chart deploys, neither of which can run on a tainted GPU node. Two by
+      default so that replacing one node leaves the other serving. It does not spread CoreDNS: the
+      add-on asks for two replicas and its anti-affinity is a preference, so both land on one node.
   ServiceIpv4Cidr:
     Type: String
-    Default: 10.100.0.0/16
+    Default: 172.20.0.0/16
     AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
     Description: >-
-      CIDR the cluster allocates Service IPs from. Set explicitly rather than left to EKS, because a
-      node group that names its own AMI has to put this value in its own bootstrap configuration and a
-      guess there is a node that never joins. Must not overlap the VPC CIDR.
+      CIDR the cluster allocates Service IPs from. An input rather than a value left to EKS, because a
+      node group that names its own AMI has to put this value in its own bootstrap configuration, and
+      the value EKS picks on its own is not readable afterwards: ServiceIpv6Cidr is a readable
+      attribute of the cluster and ServiceIpv4Cidr is not. Naming it is therefore the only way to
+      output it. Fixing it also forgoes the collision avoidance EKS applies when it picks, so the
+      default is outside the private range the VPC templates draw from, and it must not overlap
+      VpcCidr.
   FsxFileSystemId:
     Type: String
     Default: ""

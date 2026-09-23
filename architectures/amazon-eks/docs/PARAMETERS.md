@@ -19,8 +19,8 @@ the child stacks.
 | Parameter | Type | Default | What it decides |
 |---|---|---|---|
 | `KubernetesVersion` | String | `1.36` | Control plane version, the AL2023 NVIDIA AMI release, and the `kubectl` the bootstrap downloads. `1.35` or `1.36`: the GPU node group reads the `kubectl` version from a mapping keyed by this value |
-| `SystemInstanceType` | String | `m5.xlarge` | Instance type of the two system nodes. They carry CoreDNS and the node-feature-discovery master, which cannot run on a tainted GPU node. The default is chosen for Region coverage rather than speed: a type the Region does not offer fails the node group with `Unsupported - The requested configuration is currently not supported`, which names neither the type nor the Region. Check with `aws ec2 describe-instance-type-offerings --location-type availability-zone --filters Name=instance-type,Values=<type> Name=location,Values=<az>` |
-| `ServiceIpv4Cidr` | String | `10.100.0.0/16` | CIDR the cluster allocates Service addresses from. Must not overlap `VpcCidr`. Set explicitly rather than left to EKS because a node group naming its own AMI has to repeat the value in its bootstrap configuration |
+| `SystemInstanceType` | String | `m7i.xlarge` | Instance type of the two system nodes. They carry CoreDNS and the node-feature-discovery master, which cannot run on a tainted GPU node. The default is the newest generation offered in every Region the GPU types appear in: a type the Region does not offer fails the node group with `Unsupported - The requested configuration is currently not supported`, which names neither the type nor the Region. Check with `aws ec2 describe-instance-type-offerings --location-type availability-zone --filters Name=instance-type,Values=<type> Name=location,Values=<az>` |
+| `ServiceIpv4Cidr` | String | `172.20.0.0/16` | CIDR the cluster allocates Service addresses from. Must not overlap `VpcCidr`. An input rather than a value left to EKS because a node group naming its own AMI has to repeat the value in its bootstrap configuration, and the value EKS picks on its own cannot be read back: `ServiceIpv6Cidr` is a readable cluster attribute and `ServiceIpv4Cidr` is not |
 | `AdminRoleArn` | String | empty | An extra IAM principal that receives `AmazonEKSClusterAdminPolicy`. The principal that creates the stack always has it, so this is for the case where one principal provisions and another uses the cluster |
 
 ### GPU capacity
@@ -74,8 +74,8 @@ meaning as above.
 |---|---|---|---|
 | `ClusterName` | String | required | Name of the cluster. The root passes its own stack name |
 | `KubernetesVersion`, `AdminRoleArn`, `SystemInstanceType`, `SystemAmiType` | | | As above |
-| `SystemNodeCount` | Number | `2` | Number of system nodes. Not exposed by the root template: two nodes carry CoreDNS and the node feature discovery pods |
-| `ServiceIpv4Cidr` | String | `10.100.0.0/16` | As above |
+| `SystemNodeCount` | Number | `2` | Number of nodes carrying CoreDNS and the node-feature-discovery master, neither of which can run on a tainted GPU node. Not exposed by the root template. Two so that replacing one node leaves the other serving; it does not spread CoreDNS, whose anti-affinity is a preference |
+| `ServiceIpv4Cidr` | String | `172.20.0.0/16` | As above |
 | `PrivateSubnetId`, `ControlPlaneSubnetId`, `NodeSecurityGroupId` | ids | required | Outputs of the prerequisites stack |
 | `FsxFileSystemId` | String | empty | A non-empty value installs the FSx CSI driver add-on |
 

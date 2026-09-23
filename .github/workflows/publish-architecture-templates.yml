@@ -101,7 +101,9 @@ jobs:
 
       - name: Run Amazon EKS template lint
         if: ${{ steps.eks-changes.outputs.changed == 'true' }}
-        run: bash architectures/amazon-eks/tests/lint-templates.sh
+        run: |
+          python3 -m pip install --quiet pyyaml
+          bash architectures/amazon-eks/tests/lint-templates.sh
 
       - name: Run AWS PCS docs lint
         if: ${{ steps.changes.outputs.aws_pcs_changed == 'true' && hashFiles('architectures/aws-pcs/tests/lint-docs.sh') != '' }}
