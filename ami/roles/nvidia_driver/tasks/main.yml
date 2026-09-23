@@ -29,19 +29,8 @@
 
 # A driver alone does not make a container see a GPU: the device plugin fails with
 # "Failed to initialize NVML: ERROR_LIBRARY_NOT_FOUND" until the container toolkit injects the
-# driver libraries. The toolkit lives in NVIDIA's libnvidia-container repository, not in the CUDA
-# one that nvidia-release configures.
-- name: Add NVIDIA container toolkit repository
-  ansible.builtin.get_url:
-    url: https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo
-    dest: /etc/yum.repos.d/nvidia-container-toolkit.repo
-    mode: "0644"
-
-- name: Import the NVIDIA container toolkit signing key
-  ansible.builtin.rpm_key:
-    key: https://nvidia.github.io/libnvidia-container/gpgkey
-    state: present
-
+# driver libraries. It comes from the same repository nvidia-release configures, so no other
+# repository is added to the image.
 - name: Install NVIDIA container toolkit
   ansible.builtin.dnf:
     name: "nvidia-container-toolkit-{{ nvidia_container_toolkit_version }}"

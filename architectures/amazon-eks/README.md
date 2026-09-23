@@ -155,14 +155,15 @@ file: the CLI's shorthand syntax would split each one into a list.
 [
   {"ParameterKey": "NodeImageRepoPackages", "ParameterValue": "nvidia-release"},
   {"ParameterKey": "NodeImagePackages",
-   "ParameterValue": "nvidia-open-595.91.07-1.amzn2023,nvidia-container-toolkit-1.20.0-1"},
-  {"ParameterKey": "NodeImageRepoFiles",
-   "ParameterValue": "https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo"},
-  {"ParameterKey": "NodeImageRepoKeys", "ParameterValue": "https://nvidia.github.io/libnvidia-container/gpgkey"},
+   "ParameterValue": "nvidia-open-595.91.07-1.amzn2023,nvidia-container-toolkit-1.19.1-1"},
   {"ParameterKey": "NodeImageAssertPaths",
    "ParameterValue": "/usr/bin/nvidia-container-runtime,/usr/bin/kubelet,/usr/bin/nodeadm"}
 ]
 ```
+
+Both packages come from the repository `nvidia-release` brings, which is why `NodeImageRepoFiles` and
+`NodeImageRepoKeys` are absent here. A payload whose packages need a repository the image does not
+already have takes those two.
 
 The second takes an EC2 Image Builder recipe you already maintain, as one value:
 `NodeImageRecipeArn`. The stack then creates no component and no recipe of its own, and contributes
