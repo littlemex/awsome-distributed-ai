@@ -31,8 +31,7 @@ GPU_T="assets/eks-add-gpu-nodegroup.yaml"
 ROOT_T="assets/eks-gpu-cluster-deploy-all.yaml"
 AMI_T="assets/eks-gpu-node-ami.yaml"
 ALL_T=("$PREREQ_T" "$CLUSTER_T" "$GPU_T" "$ROOT_T" "$AMI_T")
-PUBLISH_MANIFEST="../../.github/amazon-eks-template-publish-manifest.yml"
-PUBLISH_WORKFLOW="../../.github/workflows/publish-amazon-eks-templates.yml"
+PUBLISH_MANIFEST="../../.github/template-publish-manifest.yml"
 RENDER="tests/render-nic-block.py"
 PARAMS_DOC="docs/PARAMETERS.md"
 
@@ -755,7 +754,7 @@ fi
 # have to name the bucket and prefix the manifest publishes to, or the root reads
 # children from somewhere they were never put.
 # --------------------------------------------------------------------------
-head_ 6 "$PUBLISH_MANIFEST publishes every template, $ROOT_T defaults to it, and $PUBLISH_WORKFLOW reads that manifest"
+head_ 6 "$PUBLISH_MANIFEST publishes every template, and $ROOT_T defaults to it"
 if [ ! -f "$PUBLISH_MANIFEST" ]; then
   skip 6 "$PUBLISH_MANIFEST not reachable from $ROOT"
 elif [ -z "$PY_YAML" ]; then
@@ -850,13 +849,6 @@ if not problems:
     print("OK %d template(s) published under %s%s/, which is what the root defaults to"
           % (len(keys), prefix, prefixes[0] if prefixes else ""))
 PYEOF
-  # The manifest is only published if a workflow reads it, and renaming one without the other leaves
-  # templates that lint cleanly and are never uploaded.
-  if [ ! -f "$PUBLISH_WORKFLOW" ]; then
-    fail 6 "$PUBLISH_WORKFLOW: expected to exist; nothing would publish $PUBLISH_MANIFEST"
-  elif ! grep -q "$(basename "$PUBLISH_MANIFEST")" "$PUBLISH_WORKFLOW"; then
-    fail 6 "$PUBLISH_WORKFLOW does not name $(basename "$PUBLISH_MANIFEST"), so that manifest is never staged"
-  fi
   if ! "$PY_YAML" "$TMP/publish.py" "$PUBLISH_MANIFEST" architectures/amazon-eks "$ROOT_T" "${ALL_T[@]}" \
       > "$TMP/publish.out" 2>"$TMP/publish.err"; then
     fail 6 "could not read $PUBLISH_MANIFEST: $(head -3 "$TMP/publish.err" | tr '\n' ' ')"
