@@ -28,8 +28,8 @@ the child stacks.
 | Parameter | Type | Default | What it decides |
 |---|---|---|---|
 | `GpuInstanceType` | String | `g7e.12xlarge` | Instance type of the GPU node group, and through the `NicLayout` mapping the whole interface layout. See README section 3 for which types have been launched |
-| `AmiType` | String | `AL2023_x86_64_NVIDIA` | EKS AMI type for the GPU nodes, used when no image input is given. Not an enumeration: EKS validates the value |
-| `SystemAmiType` | String | `AL2023_x86_64_STANDARD` | As above, for the system nodes |
+| `AmiType` | String | `AL2023_x86_64_NVIDIA` | EKS AMI type for the GPU nodes, used when no image input is given. Not an enumeration, so a type EKS adds later needs no template change. It has to be a type whose bootstrap is nodeadm, as the AL2023 family is: the GPU launch template's user data is a nodeadm `NodeConfig` |
+| `SystemAmiType` | String | `AL2023_x86_64_STANDARD` | EKS AMI type for the system nodes. Not an enumeration either, and with no launch template and no user data on that node group, any type EKS validates works |
 | `NodeAmiId` | String | empty | Node AMI for the GPU nodes. Leave the `NodeImage` inputs empty when using it. Any source: `awslabs/amazon-eks-ami`, EC2 Image Builder, or your own pipeline. It has to carry `nodeadm`, a driver that enumerates the instance type's GPUs, and the NVIDIA container toolkit |
 | `NodeImagePackages` | String | empty | Comma-separated packages to build into the node image, each pinned to a version. Setting it builds an image and boots the GPU nodes from it. The build does not interpret the packages |
 | `NodeImageRepoPackages` | String | empty | Refused without `NodeImagePackages`. Comma-separated packages whose job is to make the others resolvable, such as a vendor's `-release` package. Installed one at a time before anything else, and before the metadata refresh. A package that enables a repository has to be in place before a name from it can be resolved, which is what keeps install order out of `NodeImagePackages` |

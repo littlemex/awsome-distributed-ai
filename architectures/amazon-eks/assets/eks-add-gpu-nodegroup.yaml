@@ -135,8 +135,10 @@ Parameters:
     Type: String
     Default: AL2023_x86_64_NVIDIA
     Description: >-
-      EKS AMI type for the GPU nodes, used when NodeAmiId is empty. Not an enumeration here: EKS
-      validates the value, so a type this repository has not heard of works without a template change.
+      EKS AMI type for the GPU nodes, used when NodeAmiId is empty. Not an enumeration, so a type EKS
+      adds later works without a template change, and EKS validates the value. It has to be a type
+      whose bootstrap is nodeadm, which the AL2023 family is: the launch template's user data is a
+      nodeadm NodeConfig, and a type that bootstraps another way would not read it.
       NodeAmiId overrides it with CUSTOM.
   GpuPciVendorId:
     Type: String
@@ -866,15 +868,53 @@ Resources:
                   helm repo add nvdp https://nvidia.github.io/k8s-device-plugin
                   helm repo add eks https://aws.github.io/eks-charts
                   helm repo update
-                  helm upgrade --install nvdp nvdp/nvidia-device-plugin \
-                    --version "$NVIDIA_DEVICE_PLUGIN_CHART_VERSION" \
-                    --namespace nvidia-device-plugin --create-namespace --wait --timeout 5m \
-                    --set gfd.enabled=true \
-                    --set-json 'tolerations=[{"key":"nvidia.com/gpu","operator":"Exists","effect":"NoSchedule"}]'
-                  helm upgrade --install aws-efa-k8s-device-plugin eks/aws-efa-k8s-device-plugin \
-                    --version "$EFA_DEVICE_PLUGIN_CHART_VERSION" \
-                    --namespace kube-system --wait --timeout 5m \
-                    --set-json 'tolerations=[{"key":"nvidia.com/gpu","operator":"Exists","effect":"NoSchedule"}]'
+
+                  # A device plugin is one DaemonSet for the whole cluster, reading the driver on each
+                  # node it lands on. A second GPU node group is therefore a second claimant on a single
+                  # release, and an unconditional helm install would silently move the version the
+                  # first one pinned onto nodes whose driver came from a different AMI. The version is
+                  # something the cluster agrees on: install it when absent, leave it alone when it
+                  # already matches, and refuse to change it when it does not. Raising a pin means
+                  # raising it in every stack that shares the cluster, and forgetting one fails here
+                  # instead of moving the other group's plugin underneath it.
+                  pinned() { # release namespace wanted
+                    installed=$(helm list -n "$2" -f "^$1\$" -o json 2>/dev/null \
+                      | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r[0]["chart"].rsplit("-",1)[1] if r else "")')
+                    if [ -z "$installed" ]; then
+                      echo "absent"
+                    elif [ "$installed" = "$3" ] || [ "v$installed" = "$3" ] || [ "$installed" = "v$3" ]; then
+                      echo "matches"
+                    else
+                      echo "$installed"
+                    fi
+                  }
+
+                  state=$(pinned nvdp nvidia-device-plugin "$NVIDIA_DEVICE_PLUGIN_CHART_VERSION")
+                  case "$state" in
+                    absent)
+                      helm upgrade --install nvdp nvdp/nvidia-device-plugin \
+                        --version "$NVIDIA_DEVICE_PLUGIN_CHART_VERSION" \
+                        --namespace nvidia-device-plugin --create-namespace --wait --timeout 5m \
+                        --set gfd.enabled=true \
+                        --set-json 'tolerations=[{"key":"nvidia.com/gpu","operator":"Exists","effect":"NoSchedule"}]' ;;
+                    matches)
+                      echo "nvidia-device-plugin $NVIDIA_DEVICE_PLUGIN_CHART_VERSION is already installed; leaving it alone" ;;
+                    *)
+                      fail "the cluster runs nvidia-device-plugin $state and this stack pins $NVIDIA_DEVICE_PLUGIN_CHART_VERSION. One plugin serves every GPU node group, so the version has to be the same in every stack sharing this cluster: align the pins and deploy again" ;;
+                  esac
+
+                  state=$(pinned aws-efa-k8s-device-plugin kube-system "$EFA_DEVICE_PLUGIN_CHART_VERSION")
+                  case "$state" in
+                    absent)
+                      helm upgrade --install aws-efa-k8s-device-plugin eks/aws-efa-k8s-device-plugin \
+                        --version "$EFA_DEVICE_PLUGIN_CHART_VERSION" \
+                        --namespace kube-system --wait --timeout 5m \
+                        --set-json 'tolerations=[{"key":"nvidia.com/gpu","operator":"Exists","effect":"NoSchedule"}]' ;;
+                    matches)
+                      echo "aws-efa-k8s-device-plugin $EFA_DEVICE_PLUGIN_CHART_VERSION is already installed; leaving it alone" ;;
+                    *)
+                      fail "the cluster runs aws-efa-k8s-device-plugin $state and this stack pins $EFA_DEVICE_PLUGIN_CHART_VERSION. One plugin serves every GPU node group, so the version has to be the same in every stack sharing this cluster: align the pins and deploy again" ;;
+                  esac
 
                   # Installation and verification are separate stages so the two failures are
                   # distinguishable.

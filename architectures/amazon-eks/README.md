@@ -203,6 +203,13 @@ Every parameter, with its default and what it affects, is in
 template offers, in a VPC with an EFA-capable security group. Pass the cluster's own
 `KubernetesVersion`: the bootstrap downloads the matching `kubectl`.
 
+Deploying it more than once against the same cluster, under different `NodeGroupName` values, is how a
+cluster gets GPU node groups of different instance types or from different reservations. The device
+plugins are a constraint on that: one release of each serves the whole cluster, and the versions it
+runs have to match the versions the stack being deployed pins. A stack that pins a different version
+fails rather than moving the release under the node groups that are already using it, so raise the
+version on the stacks already on the cluster before adding one that pins a newer one.
+
 ```bash
 cd architectures/amazon-eks
 CLUSTER=my-cluster

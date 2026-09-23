@@ -129,8 +129,10 @@ Parameters:
     Type: String
     Default: AL2023_x86_64_NVIDIA
     Description: >-
-      EKS AMI type for the GPU nodes, used when no image input is given. Not an enumeration: EKS
-      validates the value, so a type this repository has not heard of works without a template change.
+      EKS AMI type for the GPU nodes, used when no image input is given. Not an enumeration, so a type
+      EKS adds later works without a template change, and EKS validates the value. It has to be a type
+      whose bootstrap is nodeadm, which the AL2023 family is: the GPU launch template's user data is a
+      nodeadm NodeConfig, and a type that bootstraps another way would not read it.
   SystemAmiType:
     Type: String
     Default: AL2023_x86_64_STANDARD

@@ -405,6 +405,10 @@ def pins(paths):
         if buffer:
             logical.append((first, buffer))
         for number, line in logical:
+            # Prose about a command is not the command. A comment naming helm or an image tag would
+            # otherwise have to be written around the check rather than for the reader.
+            if line.lstrip().startswith("#"):
+                continue
             for pattern, why in UNPINNED:
                 if pattern.search(line):
                     print("%s:%d: %s: %s" % (path, number, why, line.strip()[:160]))
