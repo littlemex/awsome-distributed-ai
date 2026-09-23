@@ -169,9 +169,10 @@ The second takes an EC2 Image Builder recipe you already maintain, as one value:
 `NodeImageRecipeArn`. The stack then creates no component and no recipe of its own, and contributes
 the build environment: the subnet and security group, the instance profile, and the wait.
 
-Outside the stack, [`ami/`](../../ami) builds an AMI with Packer, and `NodeAmiId` takes the result.
-An AMI given that way has to carry `nodeadm` and understand the `NodeConfig` the launch template
-passes, which the images in `ami/` do.
+`NodeAmiId` takes an image built anywhere, by any tool. What it has to carry is the same either way:
+`nodeadm`, so EKS can bootstrap it against the `NodeConfig` the launch template passes; a driver that
+enumerates the GPUs of the instance type it will run on; and the NVIDIA container toolkit, without
+which the device plugin starts but finds no NVML and the nodes advertise no GPUs.
 
 ## 4. Parameters
 

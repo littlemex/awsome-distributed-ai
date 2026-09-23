@@ -149,9 +149,9 @@ Parameters:
     AllowedPattern: ^(ami-[0-9a-f]{8,17})?$
     Description: >-
       Node AMI for the GPU nodes. Set it to boot from an image you already have, and leave the
-      NodeImage inputs empty. How it was produced does not matter: ami/ in this repository,
-      awslabs/amazon-eks-ami, or your own pipeline. It has to carry nodeadm and understand the
-      NodeConfig the launch template passes.
+      NodeImage inputs empty. How it was produced does not matter: awslabs/amazon-eks-ami, EC2 Image
+      Builder, or your own pipeline. It has to carry nodeadm, a driver that enumerates the instance
+      type's GPUs, and the NVIDIA container toolkit.
   NodeImagePackages:
     Type: String
     Default: ""

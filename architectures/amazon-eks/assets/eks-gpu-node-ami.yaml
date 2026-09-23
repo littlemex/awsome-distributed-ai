@@ -92,7 +92,9 @@ Parameters:
     Type: String
     Default: ""
     Description: >-
-      An existing EC2 Image Builder recipe to build instead of the one this template composes. With
+      An existing EC2 Image Builder recipe to build instead of the one this template composes. Its
+      parent image needs the Systems Manager agent: Image Builder reaches the build instance through
+      Systems Manager, and the instance profile alone does not install it. With
       this set the template contributes only the build environment, and knows nothing about contents.
   ComponentVersion:
     Type: String
@@ -100,14 +102,17 @@ Parameters:
     AllowedPattern: ^[0-9]+\.[0-9]+\.[0-9]+$
     Description: >-
       Semantic version of the Image Builder component. Image Builder resources are immutable per
-      version, so bump this when the component's steps change. Changing only the pinned versions
-      above does not need a bump: they are component parameters, not content.
+      version, so bump this when the component's steps change.
 
   RecipeVersion:
     Type: String
     Default: 1.0.0
     AllowedPattern: ^[0-9]+\.[0-9]+\.[0-9]+$
-    Description: Semantic version of the Image Builder recipe. Bump it when the recipe changes.
+    Description: >-
+      Semantic version of the Image Builder recipe. The recipe carries the inputs above as component
+      parameter values, so changing what goes into the image changes the recipe: raise this to build a
+      different payload. Reusing a version with different contents is rejected as an existing resource.
+      The root template passes one value to both versions for that reason.
 
 Rules:
   # The root enforces the same shape before it creates this stack. Repeated here because this template

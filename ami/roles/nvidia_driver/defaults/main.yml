@@ -1,9 +1,3 @@
 ---
 nvidia_driver_package_version: "580.126.09-1.amzn2023"
-# proprietary | open. Getting this wrong fails silently: the driver loads and nvidia-smi reports no
-# devices. See README.md.
-nvidia_driver_kernel_modules: proprietary
-nvidia_container_toolkit_version: "1.19.1-1"
 nvidia_driver_allow_reboot: true
-# false builds on a host without a GPU, asserting the installed packages instead of nvidia-smi.
-nvidia_driver_verify_gpu: true

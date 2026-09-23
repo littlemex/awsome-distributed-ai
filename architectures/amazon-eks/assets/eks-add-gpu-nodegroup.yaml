@@ -75,10 +75,10 @@ Parameters:
     AllowedPattern: ^(ami-[0-9a-f]{8,17})?$
     Description: >-
       Custom node AMI. Empty uses the EKS-optimised AL2023 NVIDIA AMI for KubernetesVersion. A value
-      here is how a GPU family that AMI's driver does not enumerate becomes usable: build one with
-      ami/ in this repository. Setting it requires ClusterEndpoint, ClusterCertificateAuthority and
-      ClusterServiceCidr, because EKS stops merging its own bootstrap user data as soon as the launch
-      template names an AMI.
+      here is how a GPU family that AMI's driver does not enumerate becomes usable. It has to carry
+      nodeadm, a driver that enumerates the instance type's GPUs, and the NVIDIA container toolkit.
+      Setting it requires ClusterEndpoint, ClusterCertificateAuthority and ClusterServiceCidr, because
+      EKS stops merging its own bootstrap user data as soon as the launch template names an AMI.
   ClusterEndpoint:
     Type: String
     Default: ""
