@@ -48,7 +48,7 @@ Parameters:
   KubernetesVersion:
     Type: String
     Default: "1.36"
-    AllowedValues: ["1.35", "1.36"]
+    AllowedPattern: ^1\.[0-9]{2}$
     Description: Kubernetes version. Must match every other template in the deploy.
   AdminRoleArn:
     Type: String

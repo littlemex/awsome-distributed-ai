@@ -18,7 +18,7 @@ the child stacks.
 
 | Parameter | Type | Default | What it decides |
 |---|---|---|---|
-| `KubernetesVersion` | String | `1.36` | Control plane version, the AL2023 NVIDIA AMI release, and the `kubectl` the bootstrap downloads. `1.35` or `1.36`: the GPU node group reads the `kubectl` version from a mapping keyed by this value |
+| `KubernetesVersion` | String | `1.36` | Control plane version and the AL2023 NVIDIA AMI release. Any `1.xx`; the `kubectl` the bootstrap downloads is its own parameter, because it has to stay within one minor of this and a table of the pairs would be versions to maintain here |
 | `SystemInstanceType` | String | `m7i.xlarge` | Instance type of the two system nodes. They carry CoreDNS and the node-feature-discovery master, which cannot run on a tainted GPU node. The default is the newest generation offered in every Region the GPU types appear in: a type the Region does not offer fails the node group with `Unsupported - The requested configuration is currently not supported`, which names neither the type nor the Region. Check with `aws ec2 describe-instance-type-offerings --location-type availability-zone --filters Name=instance-type,Values=<type> Name=location,Values=<az>` |
 | `ServiceIpv4Cidr` | String | `172.20.0.0/16` | CIDR the cluster allocates Service addresses from. Must not overlap `VpcCidr`. An input rather than a value left to EKS because a node group naming its own AMI has to repeat the value in its bootstrap configuration, and the value EKS picks on its own cannot be read back: `ServiceIpv6Cidr` is a readable cluster attribute and `ServiceIpv4Cidr` is not |
 | `AdminRoleArn` | String | empty | An extra IAM principal that receives `AmazonEKSClusterAdminPolicy`. The principal that creates the stack always has it, so this is for the case where one principal provisions and another uses the cluster |
@@ -89,7 +89,7 @@ bootstrap user data once a launch template carries an `ImageId`.
 | Parameter | Type | Default | What it decides |
 |---|---|---|---|
 | `ClusterName` | String | required | Cluster the node group joins |
-| `KubernetesVersion` | String | `1.36` | Must match the cluster. Selects the AMI release and the bootstrap's `kubectl` |
+| `KubernetesVersion` | String | `1.36` | Must match the cluster. Selects the AMI release EKS resolves; `KubectlVersion` is separate |
 | `PrivateSubnetId` | id | required | Subnet for the GPU nodes, in the zone of the reservation |
 | `NodeSecurityGroupId` | id | required | A security group that allows all traffic between its own members, which is EFA's requirement |
 | `ClusterSecurityGroupId` | id | required | The cluster's own security group. EKS stops attaching it once the launch template names any security group, and a node without it never joins |
@@ -97,6 +97,10 @@ bootstrap user data once a launch template carries an `ImageId`.
 | `AmiType` | String | `AL2023_x86_64_NVIDIA` | As above. Ignored when `NodeAmiId` is set, because that switches the node group to `CUSTOM` |
 | `NodeRoleArn` | String | empty | Node IAM role. Empty creates one with the four managed policies a GPU node needs |
 | `NodeAmiId` | String | empty | As above. Setting it switches the node group to `AmiType: CUSTOM`, which is why the three cluster values below are then required |
+| `KubectlVersion` | String | `1.36.4` | `kubectl` the bootstrap downloads. Has to stay within one minor version of the cluster, so a cluster on another version needs this set to match. A parameter rather than a table keyed by `KubernetesVersion`, because such a table is a set of versions to maintain here for something a caller can read off their own cluster |
+| `HelmVersion` | String | `3.19.0` | Helm the bootstrap downloads to install the device plugins |
+| `NvidiaDevicePluginChartVersion` | String | `0.20.0` | Chart version of `nvidia-device-plugin`. Pinned rather than resolved at install time, because the plugin's correctness depends on the driver on the node and nothing outside this repository states which chart version goes with which driver. One release serves the whole cluster, so every stack sharing a cluster passes the same value |
+| `EfaDevicePluginChartVersion` | String | `v0.5.32` | Chart version of `aws-efa-k8s-device-plugin`. Pinned for the same reason |
 | `GpuPciVendorId` | String | `0x10de` | PCI vendor id of the accelerators, read only by the diagnosis that runs when a node comes up without them |
 | `ClusterEndpoint`, `ClusterCertificateAuthority`, `ClusterServiceCidr` | String | empty | Required with `NodeAmiId`, and rejected as a set at submit time when one is missing. Read them from `aws eks describe-cluster` |
 | `GpuInstanceType`, `GpuNodeCount`, `GpuRootVolumeSize`, `CapacityReservationId`, `CapacityReservationType`, `PrePullImage` | | | As above |

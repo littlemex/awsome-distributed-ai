@@ -409,6 +409,9 @@ def pins(paths):
             # otherwise have to be written around the check rather than for the reader.
             if line.lstrip().startswith("#"):
                 continue
+            # A documentation URL is not a download. AWS service guides live under a literal
+            # /latest/ path segment, which is the current documentation rather than a version to pin.
+            line = re.sub(r"https://docs\.aws\.amazon\.com/\S+", "", line)
             for pattern, why in UNPINNED:
                 if pattern.search(line):
                     print("%s:%d: %s: %s" % (path, number, why, line.strip()[:160]))
@@ -663,6 +666,30 @@ PYEOF
 fi
 
 # --------------------------------------------------------------------------
+# check 3b — a template past the 51,200-byte --template-body limit cannot be
+# deployed the way the README shows. The limit belongs to the CLI, not to
+# CloudFormation, so the fix is --template-url; the point of the check is that
+# nobody finds out from a ValidationError.
+# --------------------------------------------------------------------------
+head_ 3 "the README does not deploy a template too large for --template-body"
+body_problems=0
+for t in "${ALL_T[@]}"; do
+  [ -f "$t" ] || continue
+  size=$(wc -c < "$t" | tr -d ' ')
+  base=$(basename "$t")
+  if grep -q -- "--template-body file://assets/$base" README.md 2>/dev/null; then
+    if [ "$size" -gt 51200 ]; then
+      fail 3 "README.md deploys $base with --template-body, but it is $size bytes and the limit is 51,200; use --template-url"
+      body_problems=$((body_problems + 1))
+    elif [ "$size" -gt 48640 ]; then
+      fail 3 "$base is $size bytes, within 5% of the 51,200-byte --template-body limit the README relies on"
+      body_problems=$((body_problems + 1))
+    fi
+  fi
+done
+[ "$body_problems" -eq 0 ] && pass 3 "every template the README passes with --template-body is under the limit"
+
+# --------------------------------------------------------------------------
 # check 4 — every template's parameters and $PARAMS_DOC are the same set
 # --------------------------------------------------------------------------
 head_ 4 "the parameters of every template and $PARAMS_DOC are the same set"
@@ -866,8 +893,10 @@ PYEOF
 fi
 
 # --------------------------------------------------------------------------
-# check 7 — KubernetesVersion is one set across the templates, and that set is
-# what the GPU node group carries a kubectl for
+# check 7 — the three templates agree on the default KubernetesVersion, and the
+# GPU node group's default kubectl is within one minor of it. A caller who sets
+# one and not the others gets a node that cannot join, and neither template can
+# see the other's value.
 # --------------------------------------------------------------------------
 if [ -z "$PY_YAML" ]; then
   skip 7 "needs PyYAML"
@@ -880,50 +909,48 @@ paths = sys.argv[1:]
 problems = []
 
 
-def allowed(path):
-    """AllowedValues of KubernetesVersion, () when the parameter has none, None when absent."""
+def default(path, name):
+    """Default of a parameter, "" when it has none, None when the template does not declare it."""
     text = open(path, encoding="utf-8").read()
-    block = re.search(r"^  KubernetesVersion:\n(?:    .*\n|\n)*", text, re.M)
+    block = re.search(r"^  %s:\n(?:    .*\n|\n)*" % name, text, re.M)
     if not block:
         return None
-    found = re.search(r"^    AllowedValues: \[(.*)\]$", block.group(0), re.M)
-    if not found:
-        return ()
-    return tuple(v.strip().strip('"') for v in found.group(1).split(","))
+    found = re.search(r'^    Default: "?([^"\n]+)"?$', block.group(0), re.M)
+    return found.group(1).strip() if found else ""
 
 
-sets = {}
+defaults = {}
 for path in paths:
-    values = allowed(path)
-    if values is None:
+    value = default(path, "KubernetesVersion")
+    if value is None:
         continue
-    if not values:
-        problems.append("%s: KubernetesVersion has no AllowedValues; a version the node group "
-                        "carries no kubectl for would reach the mapping lookup" % path)
+    if not value:
+        problems.append("%s: KubernetesVersion has no Default, so the templates cannot be checked "
+                        "against each other" % path)
     else:
-        sets[path] = values
+        defaults[path] = value
 
-distinct = set(sets.values())
-if len(distinct) > 1:
-    problems.append("KubernetesVersion AllowedValues differ between templates: %s"
-                    % "; ".join("%s=%s" % (p, ",".join(v)) for p, v in sorted(sets.items())))
+if len(set(defaults.values())) > 1:
+    problems.append("the templates default KubernetesVersion to different values: %s"
+                    % "; ".join("%s=%s" % (p, v) for p, v in sorted(defaults.items())))
 
 gpu = [p for p in paths if p.endswith("eks-add-gpu-nodegroup.yaml")]
-if gpu and gpu[0] in sets:
-    text = open(gpu[0], encoding="utf-8").read()
-    block = re.search(r"^  KubectlVersion:\n(?:    .*\n|      .*\n|\n)*", text, re.M)
-    keys = tuple(re.findall(r'^    "([^"]+)":$', block.group(0), re.M)) if block else ()
-    if not keys:
-        problems.append("%s: KubectlVersion mapping could not be read" % gpu[0])
-    elif set(keys) != set(sets[gpu[0]]):
-        problems.append("%s: AllowedValues %s and the KubectlVersion mapping %s are different sets"
-                        % (gpu[0], ",".join(sets[gpu[0]]), ",".join(keys)))
+if gpu and gpu[0] in defaults:
+    kubectl = default(gpu[0], "KubectlVersion")
+    if not kubectl:
+        problems.append("%s: KubectlVersion has no Default" % gpu[0])
+    else:
+        want = defaults[gpu[0]].split(".")
+        got = kubectl.split(".")
+        if len(got) < 2 or got[0] != want[0] or abs(int(got[1]) - int(want[1])) > 1:
+            problems.append("%s: default KubectlVersion %s is not within one minor of the default "
+                            "KubernetesVersion %s" % (gpu[0], kubectl, defaults[gpu[0]]))
 
 for problem in problems:
     print("PROBLEM %s" % problem)
 if not problems:
-    print("OK KubernetesVersion is %s in all %d templates, matching the KubectlVersion mapping"
-          % (",".join(next(iter(distinct))), len(sets)))
+    print("OK KubernetesVersion defaults to %s in all %d templates, and KubectlVersion is within "
+          "one minor of it" % (next(iter(set(defaults.values()))), len(defaults)))
 PYEOF
   if ! "$PY_YAML" "$TMP/kver.py" "${ALL_T[@]}" > "$TMP/kver.out" 2>"$TMP/kver.err"; then
     fail 7 "could not read the templates: $(head -3 "$TMP/kver.err" | tr '\n' ' ')"

@@ -1,64 +1,24 @@
 # Amazon EKS GPU cluster architecture
 
-CloudFormation templates for an Amazon EKS cluster whose GPU nodes are ready to run the
-disaggregated-inference and distributed-training examples in this repository: EFA on every network
-card the instance type offers it on, both Kubernetes device plugins installed and verified, local NVMe
-assembled as one volume, and optional FSx for Lustre for model weights.
+This directory provides CloudFormation templates that create an Amazon EKS cluster with an EFA-enabled GPU node group for distributed training and inference, and the eksctl manifests that preceded them.
 
-One stack deploys the whole thing. Each of the four underneath it can also be deployed on its own, so
-a GPU node group can be added to a cluster that already exists.
+- [`assets/eks-gpu-cluster-deploy-all.yaml`](./assets/eks-gpu-cluster-deploy-all.yaml): one-click CloudFormation stack (VPC, EKS cluster, system node group, GPU node group, device plugins, optional node AMI and FSx for Lustre). It creates the four templates below as nested stacks.
+- [`assets/eks-cluster-prerequisites.yaml`](./assets/eks-cluster-prerequisites.yaml), [`assets/eks-cluster.yaml`](./assets/eks-cluster.yaml), [`assets/eks-add-gpu-nodegroup.yaml`](./assets/eks-add-gpu-nodegroup.yaml), [`assets/eks-gpu-node-ami.yaml`](./assets/eks-gpu-node-ami.yaml): the same deploy split by concern, each also useful on its own. See [section 10](#10-deploying-a-single-template).
+- [`eksctl/`](./eksctl/): eksctl cluster manifests for the same topology, kept for users who manage clusters with eksctl. See [section 5](#5-eksctl-manifests).
 
-| Template | Creates |
-|---|---|
-| [`assets/eks-gpu-cluster-deploy-all.yaml`](./assets/eks-gpu-cluster-deploy-all.yaml) | Everything below, as nested stacks. Submit this one to deploy the whole architecture |
-| [`assets/eks-cluster-prerequisites.yaml`](./assets/eks-cluster-prerequisites.yaml) | VPC, subnets, NAT gateway, S3 and ECR endpoints, EFA-capable node security group, optional FSx for Lustre |
-| [`assets/eks-cluster.yaml`](./assets/eks-cluster.yaml) | EKS cluster, access entries, EKS add-ons, system node group |
-| [`assets/eks-add-gpu-nodegroup.yaml`](./assets/eks-add-gpu-nodegroup.yaml) | GPU launch template, GPU managed node group, device plugins and their verification |
-| [`assets/eks-gpu-node-ami.yaml`](./assets/eks-gpu-node-ami.yaml) | Builds a node AMI with EC2 Image Builder and returns its id. Created by the root only when `NodeImagePackages` or `NodeImageRecipeArn` is set |
-| [`eksctl/`](./eksctl/) | Reference eksctl manifests; see [section 7](#7-eksctl-manifests) |
+## 1. Architecture
 
-## 1. What this gives a workload, and what it does not
+<img align="center" src="../../assets/eks-model-training-single-az.png" width="60%" />
 
-| This architecture owns | An example owns |
-|---|---|
-| VPC, subnets, NAT, S3 and ECR endpoints | The container image and where it is built |
-| EKS cluster, add-ons, system nodes | Serving framework and its operator, if it needs one |
-| GPU nodes with EFA on every card that offers it | Prefill and decode pods, and how they are split |
-| NVIDIA and EFA device plugins, verified per node | KV cache transport and its tuning |
-| Local NVMe as one RAID0 volume at `/mnt/k8s-disks/0` | Model weights, their licences, tokens |
-| Optional FSx for Lustre filesystem and CSI driver | The `PersistentVolumeClaim` that binds to it |
-| The taint and labels the examples already expect | Request routing, autoscaling, benchmarking |
+The stack creates a VPC with a public subnet, a private subnet for the nodes, and a second private subnet in another Availability Zone for the EKS control plane. It also creates an S3 gateway endpoint and ECR interface endpoints, so a pull from the Region's private ECR does not cross the NAT gateway. The EKS cluster runs two managed node groups: `system` (`SystemNodeCount` x `SystemInstanceType`, default 2 x `m7i.xlarge`) for CoreDNS and other cluster services, and `gpu` (`GpuNodeCount` x `GpuInstanceType`) for the workload. The GPU nodes launch from a launch template that places them in a cluster placement group, attaches one EFA interface per network card, targets a capacity reservation when one is given, and assembles the local NVMe drives as a RAID0 volume. A CodeBuild project runs after the node groups exist; it installs the NVIDIA and EFA Kubernetes device plugins with Helm at pinned chart versions, waits until every GPU node advertises `nvidia.com/gpu` and `vpc.amazonaws.com/efa` in the counts its instance type carries, and optionally pulls a container image onto every GPU node. It does not report success before that wait ends, so a stack that reaches `CREATE_COMPLETE` has GPU nodes the scheduler can place work on rather than only the charts that are supposed to make them so.
 
-After `CREATE_COMPLETE` with `GpuNodeCount=N`, the cluster guarantees: N nodes labelled `role=gpu`
-and tainted `nvidia.com/gpu=true:NoSchedule`, each advertising `nvidia.com/gpu` equal to the
-instance type's GPU count and `vpc.amazonaws.com/efa` equal to its EFA interface count. The
-bootstrap does not report success until every node advertises both, so a stack that completes has
-capable nodes rather than merely installed charts.
+Two parts of that are optional. `DeployFsxLustre=true` adds an FSx for Lustre filesystem and its CSI driver for model weights. The `NodeImage` inputs add an EC2 Image Builder build that produces the node AMI, for the case where the AMI EKS resolves does not carry what the nodes need; [section 3](#3-gpu-instance-types) covers it.
 
-Examples that consume this: [`examples/inference/vllm/dsv3-uccl-nixl`](../../examples/inference/vllm/dsv3-uccl-nixl),
-[`examples/inference/sglang`](../../examples/inference/sglang),
-[`examples/inference/nvidia-dynamo`](../../examples/inference/nvidia-dynamo). Their pods already
-tolerate the taint above, and the step in their instructions that installs the two device plugins is
-already done on a cluster from this architecture.
-
-Two caveats:
-
-- An example written against SageMaker HyperPod EKS selects nodes by a HyperPod label
-  (`sagemaker.amazonaws.com/instance-group-name`). On this cluster those selectors have to be replaced
-  with `role=gpu` or with `node.kubernetes.io/instance-type`. The disaggregated-inference instructions
-  make this replacement where needed.
-- An example that mounts model weights from a `PersistentVolumeClaim` needs the volume to exist. With
-  `DeployFsxLustre=true` the filesystem and its CSI driver are created here, and
-  [`pv-fsx-lustre-static.yaml`](../../examples/use-cases/openvla-oft/kubernetes/libero/pv-fsx-lustre-static.yaml)
-  binds to it from the `FsxFileSystemId`, `FsxDnsName` and `FsxMountName` outputs. Without it, use
-  the node's local NVMe.
-
-Other manifests may need changes: the NCCL test under
-`micro-benchmarks/` has no toleration for this taint and pins a different instance type.
+The GPU nodes carry the label `role=gpu` and the taint `nvidia.com/gpu=true:NoSchedule`, which is what the inference examples in this repository already expect: a pod from `examples/inference/` tolerates that taint as written, and the step in those instructions that installs the two device plugins is already done on a cluster from here. An example written for SageMaker HyperPod EKS is the exception, because it selects nodes by a HyperPod label this cluster does not carry; replace those selectors with `role=gpu` or `node.kubernetes.io/instance-type`.
 
 ## 2. Quick start
 
-[![Launch](./images/launch-stack.svg)](https://console.aws.amazon.com/cloudformation/home#/stacks/quickcreate?templateUrl=https://awsome-distributed-ai.s3.amazonaws.com/templates/amazon-eks/eks-gpu-cluster-deploy-all.yaml&stackName=eks-gpu-cluster)
+[![Launch](images/launch-stack.svg)](https://console.aws.amazon.com/cloudformation/home#/stacks/quickcreate?templateUrl=https://awsome-distributed-ai.s3.amazonaws.com/templates/amazon-eks/eks-gpu-cluster-deploy-all.yaml&stackName=eks-gpu-cluster)
 
 Or from the CLI:
 
@@ -67,89 +27,61 @@ aws cloudformation create-stack \
   --stack-name eks-gpu-cluster \
   --template-url https://awsome-distributed-ai.s3.amazonaws.com/templates/amazon-eks/eks-gpu-cluster-deploy-all.yaml \
   --capabilities CAPABILITY_IAM \
-  --region us-west-2 \
+  --region us-east-1 \
   --parameters \
-    ParameterKey=PrimarySubnetAZ,ParameterValue=us-west-2a \
-    ParameterKey=SecondarySubnetAZ,ParameterValue=us-west-2b \
+    ParameterKey=PrimarySubnetAZ,ParameterValue=us-east-1a \
+    ParameterKey=SecondarySubnetAZ,ParameterValue=us-east-1b \
     ParameterKey=GpuInstanceType,ParameterValue=g7e.12xlarge \
-    ParameterKey=GpuNodeCount,ParameterValue=2
+    ParameterKey=GpuNodeCount,ParameterValue=2 \
+    ParameterKey=CapacityReservationId,ParameterValue=cr-0123456789abcdef0 \
+    ParameterKey=CapacityReservationType,ParameterValue=targeted-odcr
 ```
 
-The stack name becomes the cluster name. `PrimarySubnetAZ` has to be the Availability Zone of the
-capacity reservation when you use one: EFA traffic and the cluster placement group stay inside one
-zone. Expect 20 to 25 minutes.
+The root template is fetched by URL rather than deployed from the local file, because it creates the other four as nested stacks and CloudFormation fetches those by URL too. [Section 8](#8-testing-changes-before-they-are-published) covers deploying a copy that is not published yet.
 
-The GPU nodes boot from the AMI EKS resolves for the cluster version unless you say otherwise. Pass
-`NodeAmiId` to boot from an image you already have, or pass the `NodeImage` inputs to build one in the
-stack: the build starts once the network exists and runs alongside the cluster, so it adds the
-difference between its own time and the cluster's. Setting both is refused before any resource is
-created.
+`PrimarySubnetAZ` has to be the Availability Zone of the capacity reservation: EFA traffic and the placement group stay within one AZ. The stack name becomes the cluster name. Expect 20 to 25 minutes; the CodeBuild bootstrap adds a few minutes plus the image pull time when `PrePullImage` is set, and a node image build runs alongside the cluster rather than after it, so it adds the difference between its own time and the cluster's.
 
-The minimum a build needs is `NodeImagePackages` and `NodeImageAssertPaths`, or `NodeImageRecipeArn`
-on its own. The repository and assertion inputs belong to the packages path and are
-refused unless `NodeImagePackages` is set, rather than ignored.
-
-Then:
+After the stack completes:
 
 ```bash
-aws eks update-kubeconfig --name eks-gpu-cluster --region us-west-2
+aws eks update-kubeconfig --name eks-gpu-cluster --region us-east-1
 kubectl get nodes -l role=gpu -o custom-columns='NAME:.metadata.name,TYPE:.metadata.labels.node\.kubernetes\.io/instance-type,GPU:.status.allocatable.nvidia\.com/gpu,EFA:.status.allocatable.vpc\.amazonaws\.com/efa'
 ```
 
-The `KubeconfigCommand` output holds the first command with this stack's cluster name and region.
-
-**Before you deploy into a fresh account**, check the quotas below; a default account does not
-necessarily have room for them. `g7e.12xlarge` needs 48 On-Demand vCPUs per node, and each stack
-takes one Elastic IP for its NAT gateway.
-
-```bash
-REGION=us-west-2
-# G and VT On-Demand vCPUs; use L-417A185B instead for a p4/p5/p6 instance type.
-aws service-quotas get-service-quota --service-code ec2 --quota-code L-DB2E81BA --region $REGION \
-  --query 'Quota.[QuotaName,Value]' --output text
-# Elastic IPs.
-aws service-quotas get-service-quota --service-code ec2 --quota-code L-0263D0A3 --region $REGION \
-  --query 'Quota.[QuotaName,Value]' --output text
-# Concurrently running CodeBuild builds on Linux/Small, which the bootstrap build uses.
-aws service-quotas get-service-quota --service-code codebuild --quota-code L-9D07B6EF --region $REGION \
-  --query 'Quota.[QuotaName,Value]' --output text
-```
-
+The `KubeconfigCommand` stack output contains the first command with the stack's cluster name and region. With `DeployFsxLustre=true`, the `FsxFileSystemId`, `FsxDnsName` and `FsxMountName` outputs are what a static `PersistentVolume` binds to; [`pv-fsx-lustre-static.yaml`](../../examples/use-cases/openvla-oft/kubernetes/libero/pv-fsx-lustre-static.yaml) is one that does. Without it, the node's local NVMe under `/mnt/k8s-disks/0` is the shortest path to a model cache, and it disappears with the node.
 
 ## 3. GPU instance types
 
-`GpuInstanceType` selects the type; the launch template derives the interface layout from the
-`NicLayout` mapping, which records, per type, the number of network cards, how many of them carry
-EFA, whether card 0 does, and the device index used on the other cards
-(`describe-instance-types`, `NetworkInfo.MaximumNetworkCards` and `NetworkInfo.EfaInfo`).
+`GpuInstanceType` selects the instance type; the template derives the network interface layout from the `NicLayout` mapping, which records the network card count, how many cards carry EFA, whether card 0 supports EFA, and the device index used on the other cards for each type (`describe-instance-types`, `NetworkInfo.MaximumNetworkCards` and `NetworkInfo.EfaInfo`). Card 0 is device index 0; it receives `InterfaceType: efa` when the type supports EFA on card 0 and omits the property otherwise. Every other card takes the type's `SecondaryDeviceIndex` with `InterfaceType: efa`.
 
-| Instance type | GPUs | Network cards | EFA interfaces | Launched from this template |
-|---|---|---|---|---|
-| `g7.12xlarge` | 2 | 1 | 1 | yes, `eu-south-2`, from the resolved AMI and from an image built in the stack |
-| `g7.24xlarge` | 4 | 1 | 1 | no |
-| `g7.48xlarge` | 8 | 2 | 2 | no |
-| `g7e.12xlarge` | 2 | 1 | 1 | no |
-| `g7e.24xlarge` | 4 | 2 | 2 | no |
-| `g7e.48xlarge` | 8 | 4 | 4 | no |
-| `g6e.12xlarge` | 4 | 1 | 1 | no |
-| `g6e.48xlarge` | 8 | 4 | 4 | no |
-| `g5.12xlarge` | 4 | 1 | 1 | no |
-| `g4dn.8xlarge` | 1 | 1 | 1 | yes, `us-west-2`, from the resolved AMI and from an image passed in as `NodeAmiId` |
-| `p4d.24xlarge` | 8 | 4 | 4 | no |
-| `p4de.24xlarge` | 8 | 4 | 4 | no |
-| `p5.48xlarge` | 8 | 32 | 32 | no |
-| `p5en.48xlarge` | 8 | 16 | 16 | no |
-| `p6-b200.48xlarge` | 8 | 8 | 8 | no |
-| `p6-b300.48xlarge` | 8 | 17 | 16 (card 0 is ENA only) | no |
+| Instance type | GPUs | Network cards | EFA interfaces |
+|---|---|---|---|
+| `g7.12xlarge` | 2 | 1 | 1 |
+| `g7.24xlarge` | 4 | 1 | 1 |
+| `g7.48xlarge` | 8 | 2 | 2 |
+| `g7e.12xlarge` | 2 | 1 | 1 |
+| `g7e.24xlarge` | 4 | 2 | 2 |
+| `g7e.48xlarge` | 8 | 4 | 4 |
+| `g6e.12xlarge` | 4 | 1 | 1 |
+| `g6e.48xlarge` | 8 | 4 | 4 |
+| `g5.12xlarge` | 4 | 1 | 1 |
+| `g4dn.8xlarge` | 1 | 1 | 1 |
+| `p4d.24xlarge` | 8 | 4 | 4 |
+| `p4de.24xlarge` | 8 | 4 | 4 |
+| `p5.48xlarge` | 8 | 32 | 32 |
+| `p5en.48xlarge` | 8 | 16 | 16 |
+| `p6-b200.48xlarge` | 8 | 8 | 8 |
+| `p6-b300.48xlarge` | 8 | 17 | 16 (card 0 is ENA only) |
 
+To add a type, append a `NicLayout` entry with `Cards`, `EfaCards`, `PrimaryEfa` and `SecondaryDeviceIndex`, a `GpuCount` entry, and the type to `GpuInstanceType.AllowedValues`. `tests/lint-templates.sh` checks the card and EFA counts against `ec2:DescribeInstanceTypes` and refuses a type that has a row in one mapping and not the other; the per-card interface blocks are emitted by `tests/render-nic-block.py` rather than edited by hand.
 
-### Building a node image
+### The node AMI
 
-Build an image when the AMI EKS resolves does not carry what the nodes need — a driver newer than the
-one it ships, a monitoring agent, a filesystem client.
+The GPU nodes boot from the AMI EKS resolves for `AmiType` unless you say otherwise. Build one when that AMI does not carry what the nodes need — a driver newer than the one it ships, a monitoring agent, a filesystem client. Whatever its source, a node AMI has to carry `nodeadm`, so EKS can bootstrap it against the `NodeConfig` the launch template passes; a driver that enumerates the GPUs of the instance type it will run on; and the NVIDIA container toolkit, without which the device plugin starts but finds no NVML and the nodes advertise no GPUs.
 
-Two ways. The first names the packages. Those values are comma-separated, so they go in a parameters
-file: the CLI's shorthand syntax would split each one into a list.
+Three ways, and setting more than one is refused before any resource is created. `NodeAmiId` boots the nodes from an image that already exists, from any tool or pipeline. `NodeImagePackages` names packages to install into a recipe the stack composes. `NodeImageRecipeArn` builds an EC2 Image Builder recipe you already maintain.
+
+Naming packages covers the common case. Those values are comma-separated, so they go in a parameters file: the CLI's shorthand syntax would split each one into a list.
 
 ```json
 [
@@ -161,19 +93,9 @@ file: the CLI's shorthand syntax would split each one into a list.
 ]
 ```
 
-Both packages come from the repository `nvidia-release` brings, which is why `NodeImageRepoFiles` and
-`NodeImageRepoKeys` are absent here. A payload whose packages need a repository the image does not
-already have takes those two.
+`NodeImageRepoPackages` are installed first and one at a time, because a package can be how a repository arrives and a name from a repository cannot resolve before the repository exists; both packages above come from the repository `nvidia-release` brings, which is why `NodeImageRepoFiles` and `NodeImageRepoKeys` are absent here. `NodeImageAssertPaths` is required alongside the packages, because a build with nothing to assert publishes an image whose contents were never checked.
 
-The second takes an EC2 Image Builder recipe you already maintain, as one value:
-`NodeImageRecipeArn`. The stack then creates no component and no recipe of its own, and contributes
-the build environment: the security group, the subnet it is passed, the instance profile unless one is
-supplied, and the wait. Reach for it
-when the payload is not a set of packages — built from source, a file laid down at a path, anything the
-first way's `dnf` cannot express. The recipe's parent image needs the Systems Manager
-agent, which Image Builder uses to reach the build instance. The image it produces needs `nodeadm`,
-which is what reads the `NodeConfig` the launch template passes; a component can install it, and the
-EKS-optimized AL2023 image the example below resolves already carries both.
+Bringing a recipe covers the rest: a payload built from source, a file laid down at a path, anything `dnf` cannot express. The recipe's parent image needs the Systems Manager agent, which Image Builder uses to reach the build instance. The image it produces needs `nodeadm`; a component can install it, and the EKS-optimized AL2023 image the example below resolves already carries both.
 
 ```yaml
 Parameters:
@@ -235,71 +157,116 @@ Resources:
           Ebs: {VolumeSize: 100, VolumeType: gp3, DeleteOnTermination: true}
 ```
 
-Put the assertions in the `test` phase rather than in `build`: `test` runs on an instance launched from
-the produced image, so it asserts what the build publishes rather than the state of the build host.
-The example checks reboot-dependent state there, after the
-build phase and its reboot have finished. Image Builder resources are immutable per semantic version:
-editing the component document needs the component version raised, and changing which component a
-recipe carries or what it passes the component needs the recipe version raised.
+Put the assertions in the `test` phase rather than in `build`: `test` runs on an instance launched from the produced image, so it asserts what the build publishes rather than the state of the build host. The example checks reboot-dependent state there, after the build phase and its reboot have finished. Image Builder resources are immutable per semantic version: editing the component document needs the component version raised, and changing which component a recipe carries or what it passes the component needs the recipe version raised.
 
-Pass the recipe's ARN as `NodeImageRecipeArn`. That build runs with an instance profile the stack
-creates, whose role carries `EC2InstanceProfileForImageBuilder` and `AmazonSSMManagedInstanceCore`, and
-a payload from a public repository needs no more than that. A payload the build has to authenticate for,
-from a private bucket or registry, needs permissions no template here can know: supply the profile with
-`NodeImageBuildInstanceProfile`, whose role grants what Image Builder, Systems Manager and the payload
-source require. Supply it
-by name rather than by ARN. Where the payload is in another account and its resource policy names the
-role, create the role first: the one this stack would create has a generated name that does not exist
-until the stack does, so the grant cannot be written ahead of the build.
+Pass the recipe's ARN as `NodeImageRecipeArn`. The stack then creates no component and no recipe of its own, and contributes the build environment: the security group, the subnet it is passed, the instance profile unless one is supplied, and the wait. That build runs with an instance profile whose role carries `EC2InstanceProfileForImageBuilder` and `AmazonSSMManagedInstanceCore`, and a payload from a public repository needs no more than that. A payload the build has to authenticate for, from a private bucket or registry, needs permissions no template here can know: supply the profile by name with `NodeImageBuildInstanceProfile`, whose role grants what Image Builder, Systems Manager and the payload source require. Where the payload is in another account and its resource policy names the role, create the role first — the one this stack would create has a generated name that does not exist until the stack does, so the grant cannot be written ahead of the build.
 
-A build from a recipe you maintain logs under the log group Image Builder names after that recipe,
-which this stack does not own and does not delete, and it is not held to the assertion requirement the
-packages path enforces, because a recipe you maintain is responsible for its own `test` phase, which is
-why the example above has one.
-
-`NodeAmiId` takes an image built anywhere, by any tool. What it has to carry is the same either way:
-`nodeadm`, so EKS can bootstrap it against the `NodeConfig` the launch template passes; a driver that
-enumerates the GPUs of the instance type it will run on; and the NVIDIA container toolkit, without
-which the device plugin starts but finds no NVML and the nodes advertise no GPUs.
+A build from a recipe you maintain logs under the log group Image Builder names after that recipe, which this stack does not own and does not delete, and it is not held to the assertion requirement the packages path enforces, because a recipe you maintain is responsible for its own `test` phase, which is why the example above has one.
 
 ## 4. Parameters
 
-Every parameter, with its default and what it affects, is in
-[`docs/PARAMETERS.md`](./docs/PARAMETERS.md). The ones that decide a deploy:
+The parameters below decide a deploy. [`docs/PARAMETERS.md`](./docs/PARAMETERS.md) is the full reference: every parameter of all five templates, with its default and what it affects.
 
-| Parameter | Default | Notes |
+| Parameter | Default | Description |
 |---|---|---|
-| `PrimarySubnetAZ` | required | Zone of the GPU nodes and of the capacity reservation |
-| `SecondarySubnetAZ` | required | Second zone, control plane only. Must differ from the first |
-| `NodeAmiId` | empty | Boot the GPU nodes from an image you already have. Leave it empty to take the AMI EKS resolves, or give the `NodeImage` inputs to build one |
-| `GpuInstanceType` | `g7e.12xlarge` | See section 3 |
-| `GpuNodeCount` | `2` | Disaggregated inference needs at least 2. `0` is a smoke test, not a deploy |
+| `PrimarySubnetAZ` | (required) | AZ of the public and node subnets; the AZ of the capacity reservation |
+| `SecondarySubnetAZ` | (required) | Second AZ for the EKS control plane subnet. Must differ from the first |
+| `GpuInstanceType` | `g7e.12xlarge` | GPU instance type (see section 3) |
+| `GpuNodeCount` | `2` | GPU nodes, min = desired = max. `0` creates the cluster and device plugins without GPU nodes |
+| `CapacityReservationId` | empty | Targeted ODCR or Capacity Block ID. Empty launches On-Demand and consumes an open ODCR with matching attributes |
+| `CapacityReservationType` | `targeted-odcr` | `targeted-odcr` keeps the placement group and On-Demand billing against the reservation; `capacity-block` sets `MarketType=capacity-block` and omits the placement group |
+| `KubernetesVersion` | `1.36` | EKS version. Selects the AL2023 NVIDIA AMI release. The `kubectl` the bootstrap downloads is `KubectlVersion`, which has to stay within one minor of this |
+| `SystemInstanceType` | `m7i.xlarge` | Instance type of the 2-node system node group. The default is the newest generation offered in every Region the GPU types appear in |
+| `NodeAmiId` | empty | Node AMI for the GPU nodes, from any source. Leave the `NodeImage` inputs empty when using it (see section 3) |
+| `NodeImagePackages`, `NodeImageRecipeArn` | empty | Build the node AMI in the stack, from packages or from a recipe you maintain (see section 3) |
+| `AmiType` | `AL2023_x86_64_NVIDIA` | EKS AMI type for the GPU nodes, used when no image input is given. Validated by the EKS API rather than enumerated here |
+| `PrePullImage` | empty | Image pulled onto every GPU node by a DaemonSet after the device plugins are ready |
+| `AdminRoleArn` | empty | Additional IAM principal that receives `AmazonEKSClusterAdminPolicy`; the stack creator always has it |
+| `VpcCidr` | `10.0.0.0/16` | VPC CIDR, split into three /20 subnets |
+| `ServiceIpv4Cidr` | `172.20.0.0/16` | CIDR the cluster allocates Service addresses from. Must not overlap `VpcCidr` |
+| `DeployFsxLustre` | `false` | `true` creates an FSx for Lustre filesystem and its CSI driver for model weights |
+| `GpuRootVolumeSize` | `300` | Root EBS volume in GiB. Inference images are large, and they land on the root volume unless containerd is pointed at the NVMe volume |
 
-## 5. Where model weights live
+Outputs: `ClusterName`, `ClusterArn`, `VpcId`, `PrivateSubnetId`, `GpuNodeGroupName`, `GpuInstanceType`, `Region`, `KubeconfigCommand`, `BootstrapLogGroup`, `NodeAmiId`, and with FSx, `FsxFileSystemId`, `FsxDnsName`, `FsxMountName`.
 
-- `g7e.12xlarge` carries a single 3.8 TB NVMe drive, assembled as RAID0 under `/mnt/k8s-disks/0`.
-  A `hostPath` there is the shortest path to a model cache, and it disappears with the node.
-- `DeployFsxLustre=true` creates an FSx for Lustre filesystem and its CSI driver, for weights that
-  outlive the nodes or are shared. Bind to it with
-  [`pv-fsx-lustre-static.yaml`](../../examples/use-cases/openvla-oft/kubernetes/libero/pv-fsx-lustre-static.yaml),
-  rendering `FSX_FILESYSTEM_ID`, `FSX_DNS_NAME` and `FSX_MOUNT_NAME` from the stack outputs of the
-  same names.
+Combinations that cannot work are refused before any resource is created: two identical Availability Zones, a Capacity Block with no reservation id, a `PrePullImage` with `GpuNodeCount=0`, two image sources at once, and a package-build input alongside a source that ignores it.
 
-## 6. Adding GPU capacity to an existing cluster
+## 5. eksctl manifests
 
-`assets/eks-add-gpu-nodegroup.yaml` deploys on its own against an EKS cluster on a version this
-template offers, in a VPC with an EFA-capable security group. Pass the cluster's own
-`KubernetesVersion`: the bootstrap downloads the matching `kubectl`.
+The manifests under [`eksctl/`](./eksctl/) create the same two-node-group topology with [eksctl](https://eksctl.io). Each file names its instance type and capacity source; replace the `PLACEHOLDER_*` values (region, AZs, VPC and subnet IDs, capacity reservation ID) before use. They pin older Kubernetes versions and are not maintained alongside the CloudFormation path.
 
-Deploying it more than once against the same cluster, under different `NodeGroupName` values, is how a
-cluster gets GPU node groups of different instance types or from different reservations. The device
-plugins are a constraint on that: one release of each serves the whole cluster, and the versions it
-runs have to match the versions the stack being deployed pins. A stack that pins a different version
-fails rather than moving the release under the node groups that are already using it, so raise the
-version on the stacks already on the cluster before adding one that pins a newer one.
+| Manifest | Nodes | Capacity |
+|---|---|---|
+| `eks-g4dn.yaml` | 2 x g4dn.8xlarge, new VPC | On-Demand |
+| `eks-g4dn-vpc.yaml` | 2 x g4dn.8xlarge, existing VPC | On-Demand |
+| `eks-p4de-odcr.yaml` | 2 x p4de.24xlarge, new VPC | ODCR |
+| `eks-p4de-odcr-vpc.yaml` | 2 x p4de.24xlarge, existing VPC | ODCR |
+| `eks-p5-odcr-vpc.yaml` | 1 x p5.48xlarge, existing VPC | ODCR |
+| `eks-p5-capacity-block.yaml` | 1 x p5.48xlarge, existing VPC | Capacity Block |
+| `eks-g5-node-autorepair.yaml` | 2 x g5.8xlarge with node auto repair and the CloudWatch observability add-on | On-Demand |
 
 ```bash
-cd architectures/amazon-eks
+eksctl create cluster -f eksctl/eks-p4de-odcr-vpc.yaml
+eksctl delete cluster -f eksctl/eks-p4de-odcr-vpc.yaml
+```
+
+The eksctl path installs the EFA device plugin through `efaEnabled: true` and leaves the NVIDIA device plugin as a separate step; the CloudFormation path installs both from the CodeBuild bootstrap and verifies them.
+
+## 6. Cleanup
+
+```bash
+aws cloudformation delete-stack --stack-name eks-gpu-cluster
+```
+
+Nested stacks are deleted with the root. Delete any LoadBalancer services and persistent volumes created inside the cluster first, because the stack does not own them. In accounts with Amazon GuardDuty Runtime Monitoring enabled, GuardDuty creates a managed `guardduty-data` interface VPC endpoint and `GuardDutyManagedSecurityGroup-*` after the VPC appears. Those resources are outside the stack. The endpoint keeps the subnets in use; after it is deleted, the managed security group keeps the VPC in use. If the stack reaches `DELETE_FAILED`, delete the endpoint and managed security group, then retry stack deletion.
+
+Two log groups also outlive a deletion, because neither belongs to the stack: `/aws/eks/<cluster>/cluster`, which EKS creates when cluster logging is on, and `/aws/lambda/<stack>-BootstrapTrigger-*`, which Lambda creates on its first invocation. An AMI a node image build produced outlives the stack too and has to be deregistered separately.
+
+```bash
+aws logs describe-log-groups --query \
+  "logGroups[?contains(logGroupName,'<stack-name>')].logGroupName" --output text
+```
+
+
+## 7. Updating the GPU instance type
+
+A managed node group cannot update its launch-template version and its instance type in the same operation; EKS returns `Version and release version updates cannot be combined with other updates`. Choose `GpuInstanceType` when creating the stack. To change it later, replace the GPU node group stack, or deploy a second one with a different `NodeGroupName` as in section 10, rather than updating the parameter in place.
+
+## 8. Testing changes before they are published
+
+The quick-create link and the `Launch` button read the templates from the public bucket, which holds the version on `main`. The root creates its children by URL, so testing a change means publishing the set somewhere first and pointing the root at it with `S3BucketName` and `S3KeyPrefix`:
+
+```bash
+aws s3 sync assets/ "s3://$BUCKET/templates/amazon-eks/" --exclude '*' --include '*.yaml'
+aws cloudformation create-stack --stack-name "$STACK" \
+  --template-url "https://$BUCKET.s3.amazonaws.com/templates/amazon-eks/eks-gpu-cluster-deploy-all.yaml" \
+  --capabilities CAPABILITY_IAM --parameters \
+    ParameterKey=S3BucketName,ParameterValue=$BUCKET \
+    ParameterKey=S3KeyPrefix,ParameterValue=templates/amazon-eks/ \
+    ParameterKey=PrimarySubnetAZ,ParameterValue=$AZ_A \
+    ParameterKey=SecondarySubnetAZ,ParameterValue=$AZ_B
+```
+
+`GpuNodeCount=0` exercises the VPC, cluster, system node group, device plugin installation and the launch template without GPU capacity. The generated launch template can be read back with `aws ec2 describe-launch-template-versions` to check the interface list for a given `GpuInstanceType`.
+
+`bash tests/lint-templates.sh` runs eleven mechanical checks before a deploy, nine of which need no AWS account: that the mappings cover the same instance types with every key present, that the committed interface block is what `tests/render-nic-block.py` produces, that every parameter has a row in `docs/PARAMETERS.md`, that every template the root fetches is published where the root looks for it, that the templates agree on the default `KubernetesVersion` and that `KubectlVersion` is within one minor of it, that the FSx security group carries the rules FSx itself validates, that every relative link resolves, and that nothing installs an unpinned version. With an account it adds `validate-template` on each template and checks `NicLayout` against `ec2:DescribeInstanceTypes`. [`tests/gpu-efa-test.md`](./tests/gpu-efa-test.md) is the hardware procedure for the GPU and EFA claims the API cannot answer.
+
+Known limits: the GPU instance type is fixed when the node group is created (section 7); `GpuNodeCount` sets minimum, desired and maximum to the same value, so a partly available reservation fails the deploy rather than delivering fewer nodes; updating `GpuNodeCount` on a live stack re-runs the device plugin verification, which can observe the node count from before the scaling change, so delete and recreate or verify by hand afterwards; and each root or prerequisites deploy takes one NAT gateway and one Elastic IP.
+
+## 9. References
+
+- [Amazon EKS user guide](https://docs.aws.amazon.com/eks/latest/userguide/)
+- [Elastic Fabric Adapter on EKS](https://docs.aws.amazon.com/eks/latest/userguide/node-efa.html)
+- [NVIDIA device plugin for Kubernetes](https://github.com/NVIDIA/k8s-device-plugin)
+- [aws-efa-k8s-device-plugin](https://github.com/aws/eks-charts/tree/master/stable/aws-efa-k8s-device-plugin)
+- [EC2 Image Builder](https://docs.aws.amazon.com/imagebuilder/latest/userguide/)
+- [aws-do-eks](https://github.com/aws-samples/aws-do-eks)
+
+## 10. Deploying a single template
+
+Each of the four child templates deploys on its own. The one that stands alone most usefully is [`assets/eks-add-gpu-nodegroup.yaml`](./assets/eks-add-gpu-nodegroup.yaml): it adds a GPU node group, its device plugins and their verification to a cluster that already exists, in a VPC with an EFA-capable security group. Pass the cluster's own `KubernetesVersion`, and `KubectlVersion` to match it — the bootstrap downloads that `kubectl` and it has to stay within one minor of the cluster. `HelmVersion`, `NvidiaDevicePluginChartVersion` and `EfaDevicePluginChartVersion` are parameters too, with the versions this architecture was tested with as their defaults.
+
+```bash
 CLUSTER=my-cluster
 aws cloudformation create-stack \
   --stack-name my-cluster-gpu \
@@ -316,79 +283,6 @@ aws cloudformation create-stack \
     ParameterKey=GpuNodeCount,ParameterValue=2
 ```
 
-`ClusterSecurityGroupId` is not optional: as soon as a launch template specifies security groups,
-EKS stops attaching the cluster security group, and nodes that do not carry it never join.
+`ClusterSecurityGroupId` is not optional: as soon as a launch template specifies security groups, EKS stops attaching the cluster security group, and nodes that do not carry it never join. The existing cluster also needs an `AuthenticationMode` of `API` or `API_AND_CONFIG_MAP`, because the stack grants the bootstrap access with an `AWS::EKS::AccessEntry` that a `CONFIG_MAP`-only cluster rejects, and an API endpoint CodeBuild can reach, because CodeBuild runs outside your VPC. On a cluster with private endpoint access only, give the CodeBuild project a `VpcConfig` or install the two device plugins yourself at the versions the template pins.
 
-Requirements on the existing cluster:
-
-- **`AuthenticationMode` of `API` or `API_AND_CONFIG_MAP`.** The stack grants the bootstrap access
-  with an `AWS::EKS::AccessEntry`, which a `CONFIG_MAP`-only cluster rejects. Check with
-  `aws eks describe-cluster --name $CLUSTER --query cluster.accessConfig.authenticationMode`.
-- **A reachable API endpoint from CodeBuild**, which runs outside your VPC. On a cluster with only
-  private endpoint access, the bootstrap cannot reach the API server; give the CodeBuild project a
-  `VpcConfig`, or install the two device plugins yourself with the versions the template pins.
-
-This is also how you change the GPU instance type. A managed node group cannot change its instance
-type and its launch template version in one operation — EKS returns `Version and release version
-updates cannot be combined with other updates` — so deploy a second node group stack, or replace
-this one.
-
-## 7. eksctl manifests
-
-The manifests under [`eksctl/`](./eksctl/) create a comparable two-node-group topology with
-[eksctl](https://eksctl.io). They pin older
-Kubernetes versions, they have not been run against a current EKS version, and they are not
-maintained alongside the CloudFormation path. Replace the `PLACEHOLDER_*` values before use.
-
-| Manifest | Nodes | Capacity |
-|---|---|---|
-| `eks-g4dn.yaml` | 2 x g4dn.8xlarge, new VPC | On-Demand |
-| `eks-g4dn-vpc.yaml` | 2 x g4dn.8xlarge, existing VPC | On-Demand |
-| `eks-p4de-odcr.yaml` | 2 x p4de.24xlarge, new VPC | ODCR |
-| `eks-p4de-odcr-vpc.yaml` | 2 x p4de.24xlarge, existing VPC | ODCR |
-| `eks-p5-odcr-vpc.yaml` | 1 x p5.48xlarge, existing VPC | ODCR |
-| `eks-p5-capacity-block.yaml` | 1 x p5.48xlarge, existing VPC | Capacity Block |
-| `eks-g5-node-autorepair.yaml` | 2 x g5.8xlarge with node auto repair | On-Demand |
-
-```bash
-eksctl create cluster -f eksctl/eks-p4de-odcr-vpc.yaml
-eksctl delete cluster -f eksctl/eks-p4de-odcr-vpc.yaml
-```
-
-`efaEnabled: true` in those manifests installs the EFA device plugin. It does not install the
-NVIDIA device plugin; that is a separate step in the eksctl path. The CloudFormation path installs
-both and verifies them.
-
-## 8. Cleanup
-
-```bash
-aws cloudformation delete-stack --stack-name eks-gpu-cluster --region "$AWS_REGION"
-```
-
-Nested stacks are deleted with the root. Some resources are not, because the stack does not own them.
-The first two can leave the VPC undeletable; the log groups only linger. Check them before deleting:
-
-- **Anything the cluster created in your account**: `type: LoadBalancer` services and dynamically
-  provisioned persistent volumes. Delete those Kubernetes objects first.
-- **GuardDuty Runtime Monitoring**, if the account has it: a managed `guardduty-data` VPC endpoint
-  and a `GuardDutyManagedSecurityGroup-*` appear after the VPC does. The endpoint holds the subnets,
-  and then the security group holds the VPC. Deleting both and retrying the stack deletion completes
-  it.
-- **Two log groups that create themselves.** `/aws/eks/<cluster>/cluster`, which EKS creates when
-  cluster logging is on, and `/aws/lambda/<stack>-BootstrapTrigger-*`, which Lambda creates on its
-  first invocation. Neither belongs to the stack, so neither is deleted with it:
-
-  ```bash
-  aws logs describe-log-groups --query \
-    "logGroups[?contains(logGroupName,'<stack-name>')].logGroupName" --output text
-  ```
-
-## 9. Known limits
-
-- The GPU instance type is fixed when the node group is created (section 6).
-- `GpuNodeCount` sets minimum, desired and maximum to the same value, so a partly available
-  reservation fails the deploy rather than delivering fewer nodes. `0` is the exception: a managed
-  node group rejects a maximum of 0, so the maximum becomes 1 with nothing desired.
-- Updating `GpuNodeCount` on a live stack re-runs the device-plugin verification, which can observe
-  the node count from before the scaling change. Delete and recreate, or verify by hand afterwards.
-- One NAT gateway and one Elastic IP per root or prerequisites deployment.
+Deploying it more than once against the same cluster, under different `NodeGroupName` values, is how a cluster gets GPU node groups of different instance types or from different reservations. The device plugins are a constraint on that: one release of each serves the whole cluster, and the versions it runs have to match the versions the stack being deployed pins. A stack that pins a different version fails rather than moving the release under the node groups already using it, so raise the version on the stacks already on the cluster before adding one that pins a newer one.

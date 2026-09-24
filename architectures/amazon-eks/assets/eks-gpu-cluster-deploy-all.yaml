@@ -81,10 +81,10 @@ Parameters:
   KubernetesVersion:
     Type: String
     Default: "1.36"
-    AllowedValues: ["1.35", "1.36"]
+    AllowedPattern: ^1\.[0-9]{2}$
     Description: >-
-      Kubernetes version. The set is the versions the GPU node group carries a kubectl for, so a
-      version this architecture has not been deployed on is refused at submit time.
+      Kubernetes version of the cluster. The GPU node group downloads a matching kubectl, whose
+      version is its own parameter because it has to stay within one minor of this one.
   SystemInstanceType:
     Type: String
     Default: m7i.xlarge
