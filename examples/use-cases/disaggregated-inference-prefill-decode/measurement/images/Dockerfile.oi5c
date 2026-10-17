@@ -1,0 +1,4 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+COPY aim345_oi5c_patch.py /tmp/aim345_oi5c_patch.py
+RUN python3 /tmp/aim345_oi5c_patch.py

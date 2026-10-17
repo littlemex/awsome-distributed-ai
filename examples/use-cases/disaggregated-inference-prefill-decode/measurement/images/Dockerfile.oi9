@@ -1,0 +1,11 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+COPY aim345_ring.py /tmp/aim345_ring.py
+COPY aim345_oi9_patch.py /tmp/
+RUN python3 /tmp/aim345_oi9_patch.py 2>&1 | tail -5 && python3 - <<'PY'
+import pathlib, py_compile, importlib.util
+root = pathlib.Path(importlib.util.find_spec("sglang").origin).parent / "srt"
+for f in ("managers/scheduler.py", "disaggregation/prefill.py", "disaggregation/decode.py"):
+    py_compile.compile(str(root / f), doraise=True)
+print("compile ok")
+PY

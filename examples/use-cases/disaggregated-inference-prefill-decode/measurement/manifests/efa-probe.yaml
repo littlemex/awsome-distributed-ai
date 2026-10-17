@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nixl14-efa-hostnet-probe
+  namespace: ${MEASURE_NS}
+  labels:
+    app.kubernetes.io/part-of: aim345-lab
+    app: nixl14-efa-hostnet-probe
+spec:
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: ${MEASURE_NODE}
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: probe
+      image: "${LAB_IMAGE}"
+      imagePullPolicy: IfNotPresent
+      command: ["bash", "-c", "sleep 36000"]
+      resources:
+        requests:
+          vpc.amazonaws.com/efa: "1"
+          cpu: "1"
+          memory: "1Gi"
+        limits:
+          vpc.amazonaws.com/efa: "1"
+          cpu: "1"
+          memory: "1Gi"

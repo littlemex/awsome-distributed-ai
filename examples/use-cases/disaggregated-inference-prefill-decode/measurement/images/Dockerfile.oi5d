@@ -1,0 +1,6 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+COPY aim345_ring.py /tmp/aim345_ring.py
+COPY aim345_oi1_patch.py aim345_oi3_patch.py aim345_oi3b_patch.py aim345_oi5_patch.py aim345_oi6_patch.py /tmp/
+RUN python3 /tmp/aim345_oi1_patch.py && python3 /tmp/aim345_oi3_patch.py && python3 /tmp/aim345_oi3b_patch.py && python3 /tmp/aim345_oi5_patch.py && python3 /tmp/aim345_oi6_patch.py
+RUN pip install --no-cache-dir py-spy==0.4.1 && py-spy --version
