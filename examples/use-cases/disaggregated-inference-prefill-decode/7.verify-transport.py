@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 """Check installed versions, both launch selectors, and EFA RDMA byte deltas."""
 import argparse
-import asyncio
 import json
 from pathlib import Path
-from benchmark import stream_request
 from deployment import kubectl, owned_namespace, read_config
-from traffic import tokenizer, initial_prompt
-import httpx
 
 COUNTERS = '''import pathlib,json
 values={}
@@ -22,20 +18,42 @@ def snapshot(c, pods):
     return {p["metadata"]["name"]: json.loads(kubectl(c, "exec", p["metadata"]["name"], "-c", "engine", "--", "python3", "-c", COUNTERS, capture_output=True).stdout) for p in pods}
 
 
-async def smoke(c, url):
-    tok = tokenizer(c["model_id"], c["model_revision"])
-    shape = json.loads(Path("shape-b.json").read_text())
-    shape["input_tokens"] = 1024
-    import uuid
-    ids = initial_prompt(tok, shape, "transport", uuid.uuid4().hex)
+SMOKE_SCRIPT = '''
+import asyncio, json, sys, uuid
+sys.path.insert(0, "/lab")
+import httpx
+from benchmark import stream_request
+from traffic import initial_prompt, tokenizer
+c = json.load(sys.stdin)
+tok = tokenizer(c["model_id"], c["model_revision"])
+ids = initial_prompt(tok, c["shape"], "transport", uuid.uuid4().hex)
+async def run():
     async with httpx.AsyncClient(timeout=None, trust_env=False) as client:
-        return await stream_request(client, url, ids, 4, 310)
+        return await stream_request(client, c["url"], ids, 4, 310)
+print(json.dumps(asyncio.run(run())))
+'''
+
+
+def smoke_in_cluster(c, runner_pod):
+    """One probe request dispatched through a runner shard's own kubectl exec (DESIGN.md section
+    12: a one-off job through the same transport as a ramp), not from this machine -- there is no
+    --url/port-forward to this router. Needs the runner StatefulSet already deployed. Reuses
+    benchmark.stream_request/traffic.initial_prompt directly rather than importing this file,
+    which (like every numbered lab script) is not a valid Python module name. The shape dict is
+    read here, not inside the pod: the ConfigMap-mounted /lab (deployment.runner_resources) has
+    only runner_agent.py's own four dependencies, not shape-b.json."""
+    shape = dict(json.loads(Path("shape-b.json").read_text()), input_tokens=1024)
+    payload = dict(c, url=f"http://router.{c['namespace']}.svc.cluster.local:8000", shape=shape)
+    r = kubectl(c, "exec", "-i", runner_pod, "-c", "runner", "--", "python3", "-c", SMOKE_SCRIPT, input=json.dumps(payload), capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"in-cluster probe via {runner_pod} failed: {r.stderr.strip()}")
+    return json.loads(r.stdout)
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", default="config.json")
-    p.add_argument("--url", required=True)
+    p.add_argument("--runner-pod", default="runner-0", help="Shard pod the probe request is sent from (no --url/port-forward)")
     p.add_argument("--output", required=True)
     p.add_argument("--bandwidth-gib-s", type=float, help="Measured GPU-buffer fabric bandwidth, never a datasheet peak")
     p.add_argument("--bandwidth-evidence", help="Path to the matching hardware microbenchmark transcript")
@@ -70,7 +88,7 @@ def main():
     expected = c.get('engine_profile', 'mainline')
     assert profiles == {expected}, f"Expected {expected}, observed {profiles}"
     before = snapshot(c, pods)
-    response = asyncio.run(smoke(c, a.url))
+    response = smoke_in_cluster(c, a.runner_pod)
     after = snapshot(c, pods)
     deltas = {pod: {key: after[pod][key] - value for key, value in values.items()} for pod, values in before.items()}
     rdma_bytes = sum(max(0, value) for values in deltas.values() for key, value in values.items() if key.endswith(("rdma_write_bytes", "rdma_read_bytes")))

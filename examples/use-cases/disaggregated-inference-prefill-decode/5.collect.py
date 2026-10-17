@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Collect this lab's EKS evidence and summarize measured ramp files."""
 import argparse
-import csv
-import hashlib
 import json
 from pathlib import Path
-from deployment import kubectl, owned_namespace, read_config
+from deployment import engine_endpoint, engine_ports, kubectl, owned_namespace, read_config
+from rescore import check_matched, check_reproduces, check_runs, highest_qualifying, load_rows, matched_key, write_csv
 
 
 def main():
@@ -16,28 +15,28 @@ def main():
     a = p.parse_args()
     out = Path(a.output)
     out.mkdir(parents=True, exist_ok=True)
-    rows = []
-    for run in a.runs:
-        for f in sorted(Path(run).glob("*-measured.json")):
-            r = json.loads(f.read_text())
-            m = r["metadata"]
-            rows.append({"source": str(f), "architecture": m["architecture"], "instance_type": m["instance_type"], "region": m["region"], "evidence_scope": m["evidence_scope"], "model_revision": m["model_revision"], "shape": m["shape"]["name"], "shape_sha256": hashlib.sha256(json.dumps(m["shape"], sort_keys=True).encode()).hexdigest(), **r["summary"]})
-    if not rows:
-        raise SystemExit("No measured files found; no summary was fabricated")
-    with (out / "summary.csv").open("w") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0]))
-        writer.writeheader()
-        writer.writerows(rows)
-    # Group by hardware, workload, thresholds and GPU budget. Never mix the scaling arm with the iso-resource arm.
+    measured = load_rows(a.runs)
+    for m in measured:
+        check_reproduces(m)
     groups = {}
-    for r in rows:
-        key = tuple(r[k] for k in ("architecture", "instance_type", "region", "evidence_scope", "model_revision", "shape_sha256", "gpu_count", "slo_ttft_ms", "slo_tpot_ms", "attainment_target_fraction"))
-        groups.setdefault(key, []).append(r)
+    for m in measured:
+        s = m["stored"]
+        groups.setdefault((m["architecture"], *matched_key(m), s["slo_ttft_ms"], s["slo_tpot_ms"], s["attainment_target_fraction"]), []).append(m)
     qualified = []
-    for key, rs in groups.items():
-        eligible = [r for r in rs if r["meets_joint_slo"]]
-        qualified.append({"group": list(key), "highest_tested_offered_tasks_per_s_meeting_slo": max((r["offered_tasks_per_s"] for r in eligible), default=None), "max_observed_useful_calls_per_s_per_gpu": max(r["useful_calls_per_s_per_gpu"] for r in rs), "qualification": "Finite-window observation including drain; extend duration and repeat before claiming sustained capacity"})
+    for key, group in groups.items():
+        record = {"group": list(key)}
+        try:
+            check_matched(group[0]["shape"], group)
+            check_runs(group)
+        except SystemExit as refusal:
+            qualified.append({**record, "refused": str(refusal)})
+            continue
+        best = highest_qualifying(group, *key[-3:])
+        qualified.append({**record, "highest_qualifying_offered_tasks_per_s": best and best["offered"], "max_observed_useful_calls_per_s_per_gpu": max(m["stored"]["useful_calls_per_s_per_gpu"] for m in group), "qualification": "Finite-window observation including drain; extend duration and repeat before claiming sustained capacity"})
+    columns = ("source", "architecture", "instance_type", "region", "evidence_scope", "model_revision", "shape", "shape_sha256")
+    write_csv(out / "summary.csv", [{**m["stored"], **{k: m[k] for k in columns}} for m in measured])
     (out / "qualified-rates.json").write_text(json.dumps(qualified, indent=2))
+    # Live evidence after the result files, so a failing kubectl call cannot lose them.
     if a.config:
         c = read_config(a.config)
         owned_namespace(c)
@@ -51,13 +50,16 @@ def main():
                 continue
             (out / f"{name}.log").write_text(kubectl(c, "logs", name, "--all-containers=true", "--tail=-1", capture_output=True).stdout)
             if pod["metadata"]["labels"].get("component") == "engine" and pod["status"]["phase"] == "Running":
-                ports = (30000, 30001) if c.get('placement') == 'packed' else (30000,)
+                ports = engine_ports(pod["spec"])
                 for port in ports:
                     for endpoint in ("metrics", "server_info"):
-                        code = f"import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:{port}/{endpoint}').read().decode())"
-                        suffix = f"{port}-{endpoint}" if c.get('placement') == 'packed' else endpoint
-                        (out / f"{name}-{suffix}.txt").write_text(kubectl(c, "exec", name, "-c", "engine", "--", "python3", "-c", code, capture_output=True).stdout)
-    print(json.dumps({"summary_csv": str(out / "summary.csv"), "measured_rate_rows": len(rows), "qualified_rates": str(out / "qualified-rates.json")}))
+                        suffix = f"{port}-{endpoint}" if len(ports) > 1 else endpoint
+                        (out / f"{name}-{suffix}.txt").write_text(engine_endpoint(c, name, port, endpoint))
+    print(json.dumps({"summary_csv": str(out / "summary.csv"), "measured_rate_rows": len(measured), "qualified_rates": str(out / "qualified-rates.json")}))
+    refused = [q["refused"] for q in qualified if "refused" in q]
+    if refused:
+        raise SystemExit(f"{len(refused)} group(s) refused; summary.csv lists every measured file and qualified-rates.json names each reason:\n" + "\n".join(refused))
+
 
 if __name__ == "__main__":
     main()

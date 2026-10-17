@@ -28,13 +28,26 @@ def common_prefix(a, b):
     return next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
 
 
+def task_input_tokens(shape, task_id):
+    """The input length one task uses. `input_tokens_choices` (optional) draws one value per
+    task from a fixed list, deterministically from the shape's own seed and that task's id, so
+    the same shape file always assigns the same length to the same task -- the warmup/measured
+    nonce still changes the document content (see initial_prompt) but never the length drawn
+    here, which keeps the two phases' offered bytes comparable. Shapes without this key keep the
+    single fixed `input_tokens` value, unchanged."""
+    choices = shape.get("input_tokens_choices")
+    if not choices:
+        return shape["input_tokens"]
+    return random.Random(f"{shape['seed']}:lengths:{task_id}").choice(choices)
+
+
 def initial_prompt(tok, shape, task_id, run_nonce=""):
     if shape["name"].startswith("B"):
         # The nonce is before the document: per-rate warmup cannot cache the measured document.
         identity = hashlib.sha256(f"{run_nonce}:{task_id}".encode()).hexdigest()
         prefix = tokens(tok, f"{tok.bos_token}User: Record {identity}. ")
         suffix = tokens(tok, "\n\nAssistant:")
-        count = shape["input_tokens"] - len(prefix) - len(suffix)
+        count = task_input_tokens(shape, task_id) - len(prefix) - len(suffix)
         assert count > 0
         return prefix + fill(tok, shape["document_text"], count) + suffix
     system = fill(tok, shape["system_text"], shape["system_tokens"])
@@ -70,6 +83,12 @@ def generate(default_shape):
     a = p.parse_args()
     shape = json.loads(Path(a.shape).read_text())
     assert shape["tasks"] > 0
+    if "input_tokens_choices" in shape:
+        assert shape["name"].startswith("B"), "input_tokens_choices is a shape-B (single-call) field"
+        choices = shape["input_tokens_choices"]
+        assert isinstance(choices, list) and len(choices) >= 2 and all(isinstance(x, int) and x > 0 for x in choices), \
+            "input_tokens_choices must be at least two distinct positive integers"
+        assert len(set(choices)) == len(choices), "input_tokens_choices must not repeat a value"
     if shape["name"].startswith("A"):
         assert 5 <= shape["calls_per_task_min"] <= shape["calls_per_task_max"] <= 15
         assert 0.5 <= shape["prefix_overlap_min_fraction"] <= shape["prefix_overlap_target_fraction"] <= shape["prefix_overlap_max_fraction"] <= 0.9

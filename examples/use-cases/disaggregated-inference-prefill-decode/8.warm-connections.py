@@ -1,31 +1,47 @@
 #!/usr/bin/env python3
 """Prime every fixed P/D pair before measurement, then flush prompt caches."""
 import argparse
-import asyncio
 import json
 from pathlib import Path
+from deployment import kubectl, owned_namespace, read_config
+
+WARM_SCRIPT = '''
+import asyncio, json, sys
+sys.path.insert(0, "/lab")
 import httpx
 from benchmark import stream_request
-from deployment import kubectl, owned_namespace, read_config
 from traffic import tokenizer, tokens
-
-
-async def warm(c, url, pairs):
-    tok = tokenizer(c["model_id"], c["model_revision"])
-    ids = tokens(tok, f"{tok.bos_token}User: Say ready.\n\nAssistant:")
+c = json.load(sys.stdin)
+tok = tokenizer(c["model_id"], c["model_revision"])
+ids = tokens(tok, f"{tok.bos_token}User: Say ready.\\n\\nAssistant:")
+async def run():
     results = []
     async with httpx.AsyncClient(timeout=None, trust_env=False) as client:
-        for _ in range(pairs * 2):
-            r = await stream_request(client, url, ids, 4, 310)
+        for _ in range(c["pairs"] * 2):
+            r = await stream_request(client, c["url"], ids, 4, 310)
             results.append(r)
             assert r["ok"], r
     return results
+print(json.dumps(asyncio.run(run())))
+'''
+
+
+def warm_in_cluster(c, runner_pod, pairs):
+    """The connection that matters is runner-pod-to-router, which never tears down between rates
+    (DESIGN.md section 11): this script's original purpose, warming a CloudShell-to-router TCP
+    connection, is moot. Kept for its other purpose, priming engine caches, dispatched the same
+    way as 7.verify-transport.py's probe -- a kubectl exec into a runner shard, not --url."""
+    payload = dict(c, url=f"http://router.{c['namespace']}.svc.cluster.local:8000", pairs=pairs)
+    r = kubectl(c, "exec", "-i", runner_pod, "-c", "runner", "--", "python3", "-c", WARM_SCRIPT, input=json.dumps(payload), capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"in-cluster warmup via {runner_pod} failed: {r.stderr.strip()}")
+    return json.loads(r.stdout)
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", default="config.json")
-    p.add_argument("--url", required=True)
+    p.add_argument("--runner-pod", default="runner-0", help="Shard pod the warmup requests are sent from (no --url/port-forward)")
     p.add_argument("--output", required=True)
     a = p.parse_args()
     c = read_config(a.config)
@@ -35,7 +51,7 @@ def main():
     prefill = pods if packed else [x for x in pods if x["metadata"]["labels"]["role"] == "prefill"]
     decode = pods if packed else [x for x in pods if x["metadata"]["labels"]["role"] == "decode"]
     assert prefill and len(decode) == 1, "Fixed round-robin P/D topology required"
-    r = asyncio.run(warm(c, a.url, len(prefill)))
+    r = warm_in_cluster(c, a.runner_pod, len(prefill))
     flush = {}
     for pod in pods:
         for port in ((30000, 30001) if packed else (30000,)):

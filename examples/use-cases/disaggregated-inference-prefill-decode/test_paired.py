@@ -1,5 +1,4 @@
 """Allocation isolation and packed process addressing, without GPU claims."""
-import copy
 import json
 from pathlib import Path
 import unittest
@@ -43,6 +42,23 @@ class PairedTests(unittest.TestCase):
             self.assertTrue(any(':30001' in x for x in router['containers'][0]['args']))
             self.assertEqual(pod['preemptionPolicy'],'Never')
         self.assertNotEqual(*priorities)
+
+    def test_packed_engine_command_carries_opt_in_nixl_pin(self):
+        # Absent by default: the packed engine command is unchanged.
+        doc = paired_render(self.b, 'disaggregated')
+        command = next(x for x in doc['items'] if x['kind'] == 'Deployment' and x['metadata']['name'] == 'engines'
+                        )['spec']['template']['spec']['containers'][0]['command'][2]
+        self.assertNotIn('pip install', command)
+        self.assertIn('&& exec python3 /lab/packed.py', command)
+        # Opt-in: inserted after verify_image.py's own check, before the exec into packed.py.
+        pinned = dict(self.b, pin_nixl_version='1.4.0')
+        doc = paired_render(pinned, 'disaggregated')
+        command = next(x for x in doc['items'] if x['kind'] == 'Deployment' and x['metadata']['name'] == 'engines'
+                        )['spec']['template']['spec']['containers'][0]['command'][2]
+        self.assertIn(
+            'python3 /lab/verify_image.py && python3 -m pip install --no-deps '
+            '--force-reinstall nixl==1.4.0 nixl-cu13==1.4.0 && exec python3 /lab/packed.py',
+            command)
 
     def test_preparation_enforces_reduced_node_budget(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -89,6 +105,22 @@ class PairedTests(unittest.TestCase):
                 path.write_text(json.dumps(c | update))
                 with self.assertRaises(AssertionError):
                     read_config(path)
+
+    def test_check_pair_accepts_an_asymmetric_ratio_with_the_same_tp_and_total(self):
+        # unified: TP2 x 4 (8 GPUs) vs disaggregated: prefill TP2 x3 + decode TP2 x1 (8 GPUs, 6:2).
+        unified = dict(self.a, gpus_per_worker=2, unified_replicas=4)
+        split = dict(self.b, gpus_per_worker=2, prefill_workers=3, decode_workers=1)
+        self.assertEqual(check_pair(unified, split), 8)
+
+    def test_check_pair_rejects_a_ratio_whose_total_or_tp_does_not_match(self):
+        unified = dict(self.a, gpus_per_worker=2, unified_replicas=4)  # 8 GPUs, TP2
+        mismatched_total = dict(self.b, gpus_per_worker=2, prefill_workers=2, decode_workers=1)  # 6 GPUs
+        with self.assertRaisesRegex(ValueError, 'GPU totals differ'):
+            check_pair(unified, mismatched_total)
+        mismatched_tp = dict(self.b, gpus_per_worker=2, prefill_workers=3, decode_workers=1, decode_gpus_per_worker=2, prefill_gpus_per_worker=1)
+        # prefill at TP1, decode at TP2 inside the same disaggregated stack: not one uniform TP.
+        with self.assertRaisesRegex(ValueError, 'one uniform tensor-parallel size'):
+            check_pair(unified, mismatched_tp)
 
     def test_separate_node_path_preserves_two_worker_deployments(self):
         a = dict(self.a, placement='separate-nodes', nodes=['a','b'], gpus_per_worker=2)
