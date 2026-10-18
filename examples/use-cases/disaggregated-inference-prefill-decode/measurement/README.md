@@ -73,7 +73,7 @@ done
 X
 ```
 
-Expected: thousands of both lines with 1.1.0 and zero with 1.4.0.
+Expected: with 1.1.0, thousands of `cuMemGetAddressRange` lines (one per failed export on tensor-parallel rank 1) and a few `fallback to using SAR` lines, because libfabric prints that warning once per process; with 1.4.0, zero of both.
 
 ### EFA byte proof
 
@@ -121,6 +121,25 @@ X
 
 `results/measure/*/ring-dumps.jsonl` holds the per-request transfer events and loop boundaries. Expected: B, the pre-timer delay appears only on split requests and goes away with tiny chunks suppressed; G, completion is noticed at the end of the loop iteration after the transfer finished, and the extra poll removes the result-processing part.
 
+### Transfer-stage breakdown against SGLang's own timer, and descriptor counts
+
+`tools/stage_cell.sh` runs one disaggregated cell and brackets every single-rate ramp with `stages.py` snapshots, so the per-request `kvtimer` records of the `pct` image and SGLang's own `prefill_transfer_kv_cache` counter cover the same window. The five cells compare the workshop setting (shared-memory path on), the shared-memory path off with the cache on and off, the same without the patch (to see the instrumentation's own cost), and the proposed setting.
+
+```bash
+bash -euo pipefail <<'X'
+bash measurement/tools/build.sh pct
+P="$LAB_REGISTRY/aim345:measure-pct"
+bash measurement/tools/stage_cell.sh s-ws "{\"image\": \"$P\", \"page_size_tokens\": 1}" "345 1001 1002" "0.25 1 2" 20
+bash measurement/tools/stage_cell.sh s-s1 "{\"image\": \"$P\", \"page_size_tokens\": 1, \"extra_env\": {\"FI_EFA_ENABLE_SHM_TRANSFER\": \"0\"}}" "345 1001 1002" "0.25 1 2" 20
+bash measurement/tools/stage_cell.sh s-s0 "{\"image\": \"$P\", \"page_size_tokens\": 1, \"disable_prefix_cache\": true, \"extra_env\": {\"FI_EFA_ENABLE_SHM_TRANSFER\": \"0\"}}" "345 1001 1002" "0.25 1 2" 20
+bash measurement/tools/stage_cell.sh s-s1b "{\"page_size_tokens\": 1, \"extra_env\": {\"FI_EFA_ENABLE_SHM_TRANSFER\": \"0\"}}" "345 1001 1002" "0.25 1 2" 20
+bash measurement/tools/stage_cell.sh s-p "{\"image\": \"$P\", \"pin_nixl_version\": \"1.4.0\", \"page_size_tokens\": 64, \"extra_env\": {\"FI_EFA_ENABLE_SHM_TRANSFER\": \"0\"}}" "345 1001 1002" "0.25 1 2" 20
+for c in s-ws s-s1 s-s0 s-p; do python3 measurement/tools/stage_breakdown.py "results/measure/$c"; done
+X
+```
+
+`stage_breakdown.py` prints, per window, the mean of each interval (dequeue, descriptor build, posting, completion wait, completion to timer stop, total), the sum of the per-request totals beside SGLang's own sum for the same window, and the rank correlation of each request's descriptor count with its total and its completion wait.
+
 ### D. MLA/MHA per request
 
 ```bash
@@ -131,7 +150,7 @@ done; done
 X
 ```
 
-The engine log carries one line per forward with the batch's prefix lengths, the chosen path and each request's bootstrap room. Expected: every request with a cached prefix of 1 or more takes MLA and every request with 0 takes MHA; page 64 leaves the cached prefix at 0 for this traffic, whose shared part is 4 to 7 tokens.
+The engine log carries one line per forward with the batch's prefix lengths, the chosen path and each request's bootstrap room. Expected: on each request's first prefill forward, every request with a cached prefix of 1 or more takes MLA and every request with 0 takes MHA; page 64 leaves the cached prefix at 0 for this traffic, whose shared part is 4 to 7 tokens. A request split by a health check has a second forward over its own prefix, which takes MLA. `python3 measurement/tools/join_room.py results/measure/<cell>` prints the per-request join.
 
 ### F. Health-check split
 
