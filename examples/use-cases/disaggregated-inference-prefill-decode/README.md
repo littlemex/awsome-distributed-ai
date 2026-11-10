@@ -177,7 +177,7 @@ Fill both files before deployment. Give them different `aim345-*` namespaces and
 
 For the measured `g7e.12xlarge` shape, both configuration files use `gpus_per_worker: 1` and `efa_per_worker: 1`, requesting two GPUs and one EFA device per stack. Keep hardware labels, model settings and resource requests explicit. Model staging and engine compilation happen before the timed participant session.
 
-Render and deploy both stacks from a fresh pair of namespaces:
+To read the engines with an in-cluster Prometheus, set `monitoring_namespace` in both configurations first, as [Monitoring (optional)](#monitoring-optional) describes. Render and deploy both stacks from a fresh pair of namespaces:
 
 ```bash
 python3 paired.py render
@@ -195,16 +195,13 @@ export LAB_GPUS="$(python3 -c 'import json; print(2 * json.load(open("config.uni
 export LAB_REGION="$(python3 -c 'import json; print(json.load(open("config.unified.json"))["context"].split(":")[3])')"
 ```
 
-For packed placement, wait for the engine pod and router in each namespace:
+Wait for the engine pod or pods and the router in each namespace after a fresh `deploy`. `paired.py wait` renders the configurations again, takes every Deployment's name and namespace from that render (one engine pod per namespace for packed placement, the individual worker Deployments for separate-node placement) and waits for each to become Available, up to `--timeout` seconds each (default 1800). It names the first Deployment that does not become Available in time and exits non-zero:
 
 ```bash
-kubectl --context "$LAB_CONTEXT" -n "$LAB_UNIFIED_NAMESPACE" rollout status deployment/engines --timeout=1800s
-kubectl --context "$LAB_CONTEXT" -n "$LAB_UNIFIED_NAMESPACE" rollout status deployment/router --timeout=1800s
-kubectl --context "$LAB_CONTEXT" -n "$LAB_DISAGG_NAMESPACE" rollout status deployment/engines --timeout=1800s
-kubectl --context "$LAB_CONTEXT" -n "$LAB_DISAGG_NAMESPACE" rollout status deployment/router --timeout=1800s
+python3 paired.py wait
 ```
 
-With separate-node placement, wait for the individual worker Deployments named in the rendered files, using the sequential path's readiness commands in each namespace. Run each port-forward command in its own terminal with the same environment:
+Run each port-forward command in its own terminal with the same environment:
 
 ```bash
 while true; do kubectl --context "$LAB_CONTEXT" -n "$LAB_UNIFIED_NAMESPACE" port-forward service/router 8000:8000; sleep 1; done
@@ -273,7 +270,56 @@ After saving evidence, remove the pair and its PriorityClasses:
 
 ```bash
 python3 paired.py cleanup
-python3 -m unittest -v test_paired test_lab test_scoring test_benchmark test_report test_collect
+python3 -m unittest -v test_paired test_lab test_scoring test_benchmark test_report test_collect test_metrics test_dashboards
+```
+
+## Monitoring (optional)
+
+Both placements (`packed` and `separate-nodes`) can expose their engines' live SGLang metrics to an in-cluster Prometheus, and the lab's result files can be pushed to the same Prometheus. This lab does not install Prometheus; the optional tool in [`observability/prometheus-grafana/eks-in-cluster`](https://github.com/awslabs/awsome-distributed-ai/tree/main/observability/prometheus-grafana/eks-in-cluster) on this repository's `main` branch does, and this section uses its `install.py` and `push.py`. Without monitoring, skip this section: nothing else in the lab changes.
+
+Check out that tool and choose the namespace to install it into. `MONITORING_REF` is the branch or commit of the tool to check out; a commit, given in full (40 hexadecimal characters), keeps the commands below on the version you tested them with, and the last line says so when that ref has no such directory:
+
+```bash
+export MONITORING_NAMESPACE=in-cluster-monitoring
+export MONITORING_REF=main
+MONITORING_CLONE="$(mktemp -d)"
+git -C "$MONITORING_CLONE" init --quiet
+git -C "$MONITORING_CLONE" fetch --quiet --depth 1 https://github.com/awslabs/awsome-distributed-ai.git "$MONITORING_REF"
+git -C "$MONITORING_CLONE" checkout --quiet --detach FETCH_HEAD
+export MONITORING_DIR="$MONITORING_CLONE/observability/prometheus-grafana/eks-in-cluster"
+[ -f "$MONITORING_DIR/install.py" ] || echo "$MONITORING_REF has no observability/prometheus-grafana/eks-in-cluster; set MONITORING_REF to a commit that has it"
+```
+
+Name the monitoring namespace in the configurations before `render` and `deploy`: add `--monitoring-namespace "$MONITORING_NAMESPACE"` to the `facilitator/prepare-config.py` command that writes them, or set the key in configurations that already exist:
+
+```bash
+python3 -c 'import json, sys; [json.dump(dict(json.load(open(f)), monitoring_namespace=sys.argv[1]), open(f + ".new", "w"), indent=2) for f in sys.argv[2:]]' "$MONITORING_NAMESPACE" config.unified.json config.disaggregated.json
+mv config.unified.json.new config.unified.json
+mv config.disaggregated.json.new config.disaggregated.json
+```
+
+With `monitoring_namespace` set, every engine Service (not the router) carries the label `awsome-distributed-ai/scrape` with the monitoring namespace as its value, names its port `metrics`, and carries `awsome-distributed-ai/target-architecture` with the value `unified`, `disaggregated` or, after `6.scale-prefill.sh`, `disaggregated-scaled`, which Prometheus records as the series label `architecture`. `6.scale-prefill.sh` applies the scaled render, so from then on the series of `prefill-0` and `decode-0` also carry `disaggregated-scaled`. The port's new name changes only its name: the router and the engines address it by number. Nothing else in the renders changes, which `test_paired.MonitoringLabelTests` checks. The read permission is not part of the lab: the monitoring tool's `apply` grants it in each namespace it is given, once the namespace exists, so run it after `deploy`.
+
+After `deploy`, install or update the monitoring with both stack namespaces and this lab's dashboard. The install's owner is the pair, named by the unified stack's namespace. One installation serves one pair, so give each pair its own `MONITORING_NAMESPACE`; [the tool's README](https://github.com/awslabs/awsome-distributed-ai/tree/main/observability/prometheus-grafana/eks-in-cluster) describes how `apply` and `delete` treat the namespaces given and the objects of another owner. The exports are those of [Paired endpoints on separate allocations](#paired-endpoints-on-separate-allocations):
+
+```bash
+python3 "$MONITORING_DIR/install.py" apply --context "$LAB_CONTEXT" --owner "$LAB_UNIFIED_NAMESPACE" --namespace "$MONITORING_NAMESPACE" --dashboard dashboards/engines.json --scrape-namespace "$LAB_UNIFIED_NAMESPACE" --scrape-namespace "$LAB_DISAGG_NAMESPACE"
+```
+
+[metrics.py](metrics.py) turns this lab's result files into Prometheus text exposition with the metric prefix `disagg_`, one group per invocation, for `push.py` to send. Group each push by `instance` (the pair, as for the owner above), `kind` and `run`, so that no push of this lab replaces another's group. `metrics.py answers` prints two series per completed call, so push each run as its own group, as below. `metrics.py targets` also sends `disagg_target_qualified` (1 or 0) for every group and rule it could judge, so a collection in which nothing qualified still replaces an earlier push of the same group. The Pushgateway has no authentication of its own (see the known limits in the tool's README), so anything that can reach it can still write any group. When `metrics.py` refuses its input or finds nothing to convert, it prints nothing and exits non-zero, and `push.py` refuses empty input, so nothing is sent. `metrics.py` labels a sample by architecture, shape, rate, seed and objective, not by the other group fields of `5.collect.py`, so collect runs that differ in instance type, Region, evidence scope, model revision or GPU count into separate directories:
+
+```bash
+python3 metrics.py summary results/paired-comparison/summary.csv | python3 "$MONITORING_DIR/push.py" put --job disagg --group instance="$LAB_UNIFIED_NAMESPACE" --group kind=summary --group run=paired-comparison --via kubectl --context "$LAB_CONTEXT" --namespace "$MONITORING_NAMESPACE"
+python3 metrics.py targets results/paired-comparison | python3 "$MONITORING_DIR/push.py" put --job disagg --group instance="$LAB_UNIFIED_NAMESPACE" --group kind=targets --group run=paired-comparison --via kubectl --context "$LAB_CONTEXT" --namespace "$MONITORING_NAMESPACE"
+python3 metrics.py answers results/paired-disaggregated-b | python3 "$MONITORING_DIR/push.py" put --job disagg --group instance="$LAB_UNIFIED_NAMESPACE" --group kind=answers --group run=paired-disaggregated-b --via kubectl --context "$LAB_CONTEXT" --namespace "$MONITORING_NAMESPACE"
+```
+
+[dashboards/engines.json](dashboards/engines.json), generated by [dashboards/gen_engines.py](dashboards/gen_engines.py), shows these series: engine readiness and KV cache capacity, the disaggregated stack's request queues at each stage (bootstrap, prefill, KV transfer, decode), the unified stack's running and waiting requests, output tokens per second, p90 time to first token, p90 KV handoff time, token gaps over 200 ms, and two tables of five of the pushed `disagg_rate_*` series per rate, seed and objective: the p90 latencies, and the verdict under each TPOT rule. Every live query keeps each namespace apart, so the two stacks' engines are never summed together. The pushed `disagg_target_*` and `disagg_answer_*` series have no panel; query them in Grafana's Explore view.
+
+Remove the monitoring with the same owner; its read grant in a namespace also goes when `paired.py cleanup` deletes that namespace:
+
+```bash
+python3 "$MONITORING_DIR/install.py" delete --context "$LAB_CONTEXT" --owner "$LAB_UNIFIED_NAMESPACE" --namespace "$MONITORING_NAMESPACE"
 ```
 
 ## Sequential comparison
@@ -466,7 +512,7 @@ Collect logs before switching deployments or cleaning up. Cleanup deletes only t
 
 ```bash
 ./9.cleanup.sh --config config.json
-python3 -m unittest -v test_lab test_scoring test_benchmark test_report test_collect test_paired
+python3 -m unittest -v test_lab test_scoring test_benchmark test_report test_collect test_paired test_metrics test_dashboards
 ```
 
 Common failures include insufficient scheduled GPU/EFA resources, missing EFA devices, incompatible host drivers, insufficient locked-memory permissions, blocked bootstrap TCP, incomplete image pulls, and version mismatches. Inspect pod events and engine logs first. Never treat a successful HTTP response on an unverified transport as an EFA result.

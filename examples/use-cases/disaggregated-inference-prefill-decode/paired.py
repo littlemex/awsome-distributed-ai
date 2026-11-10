@@ -2,13 +2,17 @@
 import argparse
 import copy
 import json
+import sys
 from pathlib import Path
+import re
+import subprocess
 import urllib.request
 from deployment import OWNER, kubectl, owned_namespace, read_config, render
 
 MATCHED = ('context', 'image', 'router_image', 'instance_type', 'gpus_per_worker', 'efa_per_worker',
            'model_id', 'model_revision', 'context_length_tokens',
-           'chunked_prefill_size_tokens', 'disable_prefix_cache', 'placement', 'packed_cpu', 'packed_memory')
+           'chunked_prefill_size_tokens', 'disable_prefix_cache', 'placement', 'packed_cpu', 'packed_memory',
+           'monitoring_namespace')
 
 
 def check_pair(unified, split):
@@ -89,14 +93,38 @@ def paired_render(c, mode):
     return {'apiVersion': 'v1', 'kind': 'List', 'items': result}
 
 
+def positive_int(text):
+    if not re.fullmatch(r'[1-9][0-9]*', text):
+        raise argparse.ArgumentTypeError('must be a whole number of at least 1')
+    return int(text)
+
+
+def wait_deployments(context, items, timeout):
+    """Wait for every rendered Deployment to become Available, reading its name and namespace from the
+    render. Returns the (namespace, name) pairs waited for, in render order."""
+    names = [(x['metadata']['namespace'], x['metadata']['name']) for x in items if x['kind'] == 'Deployment']
+    for namespace, name in names:
+        print(f'paired.py wait: deployment {namespace}/{name}', file=sys.stderr, flush=True)
+        # condition=Available, not rollout status: rollout status gives up when a Deployment passes its
+        # progressDeadlineSeconds (600 s by default), which a cold model download can exceed.
+        r = subprocess.run(['kubectl', '--context', context, '-n', namespace, 'wait', '--for=condition=Available',
+                            f'deployment/{name}', f'--timeout={timeout}s'], text=True, capture_output=True)
+        if r.returncode:
+            raise SystemExit(f'paired.py wait: deployment {namespace}/{name} is not Available (waited up to {timeout} s): '
+                             f'{(r.stderr or r.stdout).strip()}; see kubectl -n {namespace} describe deployment/{name} and the '
+                             f'namespace events for the reason')
+    return names
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action', choices=['render', 'deploy', 'verify', 'cleanup'])
+    p.add_argument('action', choices=['render', 'deploy', 'verify', 'cleanup', 'wait'])
     p.add_argument('--unified-config', default='config.unified.json')
     p.add_argument('--disaggregated-config', default='config.disaggregated.json')
     p.add_argument('--unified-url', default='http://127.0.0.1:8000')
     p.add_argument('--disaggregated-url', default='http://127.0.0.1:8001')
     p.add_argument('--output', type=Path, default=Path('results/paired'))
+    p.add_argument('--timeout', type=positive_int, default=1800, help='Seconds to wait for each Deployment to become Available (wait)')
     a = p.parse_args()
     configs = [read_config(a.unified_config), read_config(a.disaggregated_config)]
     gpus = check_pair(*configs)
@@ -106,6 +134,10 @@ def main():
         (a.output / (mode + '.json')).write_text(json.dumps(doc, indent=2)+'\n')
     if a.action == 'render':
         print(json.dumps({'gpus_per_stack': gpus, 'namespaces': [c['namespace'] for c in configs], 'output': str(a.output)}))
+        return
+    if a.action == 'wait':
+        waited = wait_deployments(configs[0]['context'], [x for doc in docs for x in doc['items']], a.timeout)
+        print(json.dumps({'waited': [f'{ns}/{name}' for ns, name in waited]}))
         return
     if a.action == 'deploy':
         # Do not silently adopt another participant's existing namespace.

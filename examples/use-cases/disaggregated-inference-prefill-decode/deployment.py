@@ -6,6 +6,14 @@ import re
 import subprocess
 
 OWNER = {"app.kubernetes.io/part-of": "aim345-lab"}
+# With monitoring_namespace set, engine Services opt in to an in-cluster Prometheus that selects Services by
+# SCRAPE_LABEL; it maps a Service label "awsome-distributed-ai/target-<x>" to the series label "<x>", so
+# ARCH_LABEL becomes "architecture".
+SCRAPE_LABEL = "awsome-distributed-ai/scrape"
+ARCH_LABEL = "awsome-distributed-ai/target-architecture"
+ARCHITECTURES = ("unified", "disaggregated", "disaggregated-scaled")
+# RFC 1123 DNS label, as Kubernetes requires of a namespace name.
+DNS1123_LABEL = r"[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?"
 
 
 def read_config(path):
@@ -22,6 +30,9 @@ def read_config(path):
     assert c.get("placement", "separate-nodes") in ("packed", "separate-nodes")
     assert len(c["nodes"]) == len(set(c["nodes"])) >= minimum_nodes
     assert c["model_cache_host_path"].startswith("/mnt/"), "Use a dedicated cache under /mnt"
+    if c.get("monitoring_namespace") is not None:
+        assert isinstance(c["monitoring_namespace"], str) and re.fullmatch(DNS1123_LABEL, c["monitoring_namespace"]), \
+            "monitoring_namespace must be a valid Kubernetes namespace name"
     if c.get('engine_profile') == 'v4-optional' or c['model_id'] == 'deepseek-ai/DeepSeek-V4-Flash':
         assert c.get('engine_profile') == 'v4-optional', 'V4 requires the separately pinned optional engine'
         assert c['model_id'] == 'deepseek-ai/DeepSeek-V4-Flash', 'The optional profile is qualified only for V4'
@@ -51,11 +62,19 @@ def metadata(c, name, labels=None):
     return {"name": name, "namespace": c["namespace"], "labels": OWNER | (labels or {})}
 
 
-def service(c, name, port, headless=False):
-    spec = {"selector": OWNER | {"app": name}, "ports": [{"name": "http", "port": port, "targetPort": port}]}
+def service(c, name, port, headless=False, architecture=None):
+    """A Service. `architecture` names an engine Service's stack (one of ARCHITECTURES); with
+    `monitoring_namespace` set, that Service carries the scrape and architecture labels and names its port
+    "metrics" instead of "http". Other Services, such as the router's, are unchanged."""
+    labels, port_name = None, "http"
+    if architecture is not None and c.get("monitoring_namespace"):
+        assert architecture in ARCHITECTURES, f"architecture must be one of {ARCHITECTURES}"
+        labels = {SCRAPE_LABEL: c["monitoring_namespace"], ARCH_LABEL: architecture}
+        port_name = "metrics"
+    spec = {"selector": OWNER | {"app": name}, "ports": [{"name": port_name, "port": port, "targetPort": port}]}
     if headless:
         spec.update(clusterIP="None", publishNotReadyAddresses=True)
-    return {"apiVersion": "v1", "kind": "Service", "metadata": metadata(c, name), "spec": spec}
+    return {"apiVersion": "v1", "kind": "Service", "metadata": metadata(c, name, labels), "spec": spec}
 
 
 def worker(c, name, node, role):
@@ -103,9 +122,10 @@ def render(c, mode, prefill_replicas=1):
         roles = [("prefill-0", c["nodes"][0], "prefill"), ("decode-0", c["nodes"][1], "decode")]
         if prefill_replicas == 2:
             roles.append(("prefill-1", c["nodes"][2], "prefill"))
+    architecture = "disaggregated-scaled" if mode != "unified" and prefill_replicas == 2 else mode
     items = [{"apiVersion": "scheduling.k8s.io/v1", "kind": "PriorityClass", "metadata": {"name": c["namespace"] + "-nonpreempting", "labels": OWNER}, "value": -10, "preemptionPolicy": "Never", "globalDefault": False, "description": "Nonpreempting priority for the AIM345 lab namespace"}]
     for name, node, role in roles:
-        items += [worker(c, name, node, role), service(c, name, 30000, headless=True)]
+        items += [worker(c, name, node, role), service(c, name, 30000, headless=True, architecture=architecture)]
     # Use individual worker endpoints: one Service balancing replicas hides them from the router.
     url = lambda name: f"http://{name}.{c['namespace']}.svc.cluster.local:30000"
     args = ["--host", "0.0.0.0", "--port", "8000", "--policy", "round_robin", "--disable-retries", "--request-timeout-secs", "330"]

@@ -1,0 +1,500 @@
+{
+  "uid": "disagg-engines",
+  "title": "Disaggregated inference: engines",
+  "tags": [
+    "disaggregated-inference"
+  ],
+  "editable": false,
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "row",
+      "id": 1,
+      "title": "Engines",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "table",
+      "title": "Engines",
+      "description": "One row per scraped SGLang engine Service. Metrics read is no while an engine starts or when the optional Prometheus cannot reach it.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (namespace, architecture, service) (up{architecture=~\"unified|disaggregated(-scaled)?\",namespace=~\"$namespace\"})",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (namespace, architecture, service) (sglang:max_total_num_tokens{namespace=~\"$namespace\"})",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge"
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "namespace": "Namespace",
+              "architecture": "Architecture",
+              "service": "Service",
+              "Value #A": "Metrics read",
+              "Value #B": "KV cache capacity (tokens)"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Metrics read"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "no"
+                      },
+                      "1": {
+                        "text": "yes"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "id": 2,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      }
+    },
+    {
+      "type": "table",
+      "title": "Pushed latencies",
+      "description": "From metrics.py's summary command: each pushed rate's p90 latencies. One row per comparison (instance), run, rate and objective, so separate pushes and objectives stay separate.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (instance, run, architecture, shape, rate, seed, ttft_slo_ms, tpot_slo_ms, attainment_target) (disagg_rate_ttft_p90_seconds)",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (instance, run, architecture, shape, rate, seed, ttft_slo_ms, tpot_slo_ms, attainment_target) (disagg_rate_tpot_p90_seconds)",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge"
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "instance": "Comparison",
+              "run": "Run",
+              "architecture": "Architecture",
+              "shape": "Shape",
+              "rate": "Rate (tasks/s)",
+              "seed": "Seed",
+              "ttft_slo_ms": "TTFT objective (ms)",
+              "tpot_slo_ms": "TPOT objective (ms)",
+              "attainment_target": "Attainment target",
+              "Value #A": "p90 first token",
+              "Value #B": "p90 per token"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p90 first token"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p90 per token"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
+      },
+      "id": 3,
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      }
+    },
+    {
+      "type": "table",
+      "title": "Pushed verdicts",
+      "description": "From metrics.py's summary command: each pushed rate's verdict under each of this lab's three TPOT rules (mean, itl-p99, worst-itl); a blank cell is a rule a pushed file could not be judged under. Every column of a table carries the same labels, so its rows merge one to one.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (instance, run, architecture, shape, rate, seed, ttft_slo_ms, tpot_slo_ms, attainment_target, rule) (disagg_rate_pass)",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (instance, run, architecture, shape, rate, seed, ttft_slo_ms, tpot_slo_ms, attainment_target, rule) (disagg_rate_attainment_ratio)",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "refId": "C",
+          "expr": "max by (instance, run, architecture, shape, rate, seed, ttft_slo_ms, tpot_slo_ms, attainment_target, rule) (disagg_rate_useful_calls_per_s_per_gpu)",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge"
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "instance": "Comparison",
+              "run": "Run",
+              "architecture": "Architecture",
+              "shape": "Shape",
+              "rate": "Rate (tasks/s)",
+              "seed": "Seed",
+              "ttft_slo_ms": "TTFT objective (ms)",
+              "tpot_slo_ms": "TPOT objective (ms)",
+              "attainment_target": "Attainment target",
+              "rule": "Rule",
+              "Value #A": "Pass",
+              "Value #B": "Within both limits",
+              "Value #C": "Useful calls/s/GPU"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Pass"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "no"
+                      },
+                      "1": {
+                        "text": "yes"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Within both limits"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              }
+            ]
+          }
+        ]
+      },
+      "id": 4,
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      }
+    },
+    {
+      "type": "row",
+      "id": 5,
+      "title": "Live engine series",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Disaggregated stack: requests at each stage",
+      "description": "Requests at each stage of the disaggregated stack's engines, read at each scrape; a peak shorter than the scrape interval can be missed.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sglang:num_prefill_bootstrap_queue_reqs{architecture=~\"disaggregated(-scaled)?\",namespace=~\"$namespace\",engine_type=\"prefill\"}",
+          "legendFormat": "{{namespace}}/{{service}} waiting for the decode handshake"
+        },
+        {
+          "refId": "B",
+          "expr": "sglang:num_queue_reqs{architecture=~\"disaggregated(-scaled)?\",namespace=~\"$namespace\",engine_type=\"prefill\"}",
+          "legendFormat": "{{namespace}}/{{service}} waiting for prefill"
+        },
+        {
+          "refId": "C",
+          "expr": "sglang:num_prefill_inflight_queue_reqs{architecture=~\"disaggregated(-scaled)?\",namespace=~\"$namespace\",engine_type=\"prefill\"}",
+          "legendFormat": "{{namespace}}/{{service}} sending KV"
+        },
+        {
+          "refId": "D",
+          "expr": "sglang:num_decode_prealloc_queue_reqs{architecture=~\"disaggregated(-scaled)?\",namespace=~\"$namespace\",engine_type=\"decode\"}",
+          "legendFormat": "{{namespace}}/{{service}} waiting for KV memory"
+        },
+        {
+          "refId": "E",
+          "expr": "sglang:num_decode_transfer_queue_reqs{architecture=~\"disaggregated(-scaled)?\",namespace=~\"$namespace\",engine_type=\"decode\"}",
+          "legendFormat": "{{namespace}}/{{service}} receiving KV"
+        },
+        {
+          "refId": "F",
+          "expr": "sglang:num_queue_reqs{architecture=~\"disaggregated(-scaled)?\",namespace=~\"$namespace\",engine_type=\"decode\"}",
+          "legendFormat": "{{namespace}}/{{service}} waiting to decode"
+        },
+        {
+          "refId": "G",
+          "expr": "sglang:num_running_reqs{architecture=~\"disaggregated(-scaled)?\",namespace=~\"$namespace\",engine_type=\"decode\"}",
+          "legendFormat": "{{namespace}}/{{service}} decoding"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        }
+      },
+      "id": 6,
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Unified stack: running and waiting requests",
+      "description": "Requests that each unified engine is running and holding in its queue, read at each scrape.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sglang:num_running_reqs{architecture=\"unified\",namespace=~\"$namespace\"}",
+          "legendFormat": "{{namespace}}/{{service}} running"
+        },
+        {
+          "refId": "B",
+          "expr": "sglang:num_queue_reqs{architecture=\"unified\",namespace=~\"$namespace\"}",
+          "legendFormat": "{{namespace}}/{{service}} waiting"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        }
+      },
+      "id": 7,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Output tokens per second",
+      "description": "Tokens that each architecture's engines generated per second, over Grafana's rate interval (at least four scrape intervals).",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (namespace, architecture) (rate(sglang:generation_tokens_total{engine_type!=\"prefill\",namespace=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "{{namespace}} {{architecture}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        }
+      },
+      "id": 8,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 12,
+        "y": 30
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Engine first-token time, p90",
+      "description": "Measured by the engines from the moment each request reached them, so it leaves out the router and the client.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.9, sum by (le, namespace, architecture) (rate(sglang:time_to_first_token_seconds_bucket{engine_type!=\"prefill\",namespace=~\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "{{namespace}} {{architecture}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        }
+      },
+      "id": 9,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 38
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "KV handoff time, p90",
+      "description": "Time the disaggregated stack's prefill engine took to send a request's KV cache to the decode engine, from the first chunk sent until the transfer was confirmed.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.9, sum by (le, namespace, architecture) (rate(sglang:kv_transfer_latency_ms_bucket{architecture=~\"disaggregated(-scaled)?\",namespace=~\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "{{namespace}} {{architecture}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0
+        }
+      },
+      "id": 10,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 38
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Token gaps over 200 ms, per engine",
+      "description": "Token gaps longer than 200 ms that each engine recorded in each rate interval (at least four scrape intervals). An engine counts the gaps of all its requests together, so this panel cannot tell which answer a gap belongs to.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (namespace, architecture, service) (increase(sglang:inter_token_latency_seconds_bucket{le=\"+Inf\",engine_type!=\"prefill\",namespace=~\"$namespace\"}[$__rate_interval])) - sum by (namespace, architecture, service) (increase(sglang:inter_token_latency_seconds_bucket{le=\"0.2\",engine_type!=\"prefill\",namespace=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "{{namespace}}/{{service}} {{architecture}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        }
+      },
+      "id": 11,
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 46
+      }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "label": "Namespace",
+        "type": "query",
+        "refresh": 2,
+        "sort": 1,
+        "query": {
+          "query": "label_values(up{architecture=~\"unified|disaggregated(-scaled)?\"}, namespace)",
+          "refId": "namespace"
+        },
+        "definition": "label_values(up{architecture=~\"unified|disaggregated(-scaled)?\"}, namespace)",
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  }
+}

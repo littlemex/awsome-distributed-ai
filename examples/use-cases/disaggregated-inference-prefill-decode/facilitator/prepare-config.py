@@ -2,13 +2,14 @@
 import argparse
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 from decimal import Decimal
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from paired import check_pair
-from deployment import read_config
+from deployment import DNS1123_LABEL, read_config
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--context', required=True)
@@ -23,7 +24,10 @@ p.add_argument('--cpu-per-stack', type=int, help='Total engine and router CPU li
 p.add_argument('--memory-gib-per-stack', type=int, help='Total engine and router memory limit in GiB; default leaves 4 allocatable GiB for node agents')
 p.add_argument('--model-cache-host-path', default='/mnt/k8s-disks/0/aim345-models')
 p.add_argument('--inventory', type=Path, help='Saved kubectl node List for offline review')
+p.add_argument('--monitoring-namespace', help='Namespace of an in-cluster Prometheus that reads the engine Services (optional)')
 a = p.parse_args()
+if a.monitoring_namespace is not None and not re.fullmatch(DNS1123_LABEL, a.monitoring_namespace):
+    p.error('--monitoring-namespace must be a valid Kubernetes namespace name')
 names = a.nodes.split(',')
 if len(set(names)) != 2 or not a.namespace_prefix.startswith('aim345-'):
     p.error('Use two distinct nodes and an aim345- namespace prefix')
@@ -80,6 +84,8 @@ for mode, name in zip(('unified', 'disaggregated'), names):
                   model_cache_host_path=a.model_cache_host_path)
     config['tolerations'] = [dict(key=t['key'], operator='Equal', value=t.get('value', ''), effect=t['effect'])
                              for t in node['spec'].get('taints', [])]
+    if a.monitoring_namespace is not None:
+        config['monitoring_namespace'] = a.monitoring_namespace
     path = a.output / f'config.{mode}.json'
     if path.exists():
         raise FileExistsError(f'Preserve the existing configuration: {path}')

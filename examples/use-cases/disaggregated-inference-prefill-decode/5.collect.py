@@ -157,7 +157,7 @@ def main():
         # rows reports throughput earned by violating the objective, and silently uses a different
         # scope per architecture depending on where each one happens to break.
         eligible = [r for _m, r in members if r["meets_joint_slo"]]
-        qualified.append({"group": list(key), "highest_tested_offered_tasks_per_s_meeting_slo": max((r["offered_tasks_per_s"] for r in eligible), default=None),
+        qualified.append({"group": list(key), "group_fields": list(GROUP_KEY), "highest_tested_offered_tasks_per_s_meeting_slo": max((r["offered_tasks_per_s"] for r in eligible), default=None),
                           "max_observed_useful_calls_per_s_per_gpu": max((r["useful_calls_per_s_per_gpu"] for r in eligible), default=None),
                           "qualification": "Finite-window observation including drain; extend duration and repeat before claiming sustained capacity",
                           "ttft_metric": ttft_metric,

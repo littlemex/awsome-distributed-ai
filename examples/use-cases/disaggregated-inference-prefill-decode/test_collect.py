@@ -81,6 +81,8 @@ class CollectTests(unittest.TestCase):
                            _run(d, 'disaggregated', 2, [steady] * 9 + [FAILED], seed=1, rates=[2])})
             _, qualified, _ = _collect(Path(d) / 'out', *runs)
         u, dis = _group(qualified, 'unified'), _group(qualified, 'disaggregated')
+        self.assertEqual(u['group_fields'], list(collect.GROUP_KEY))
+        self.assertEqual(dict(zip(u['group_fields'], u['group']))['architecture'], 'unified')
         self.assertEqual((u['highest_tested_offered_tasks_per_s_meeting_slo'], u['max_observed_useful_calls_per_s_per_gpu']), (2, 1.0))
         self.assertEqual(u['by_rule']['mean'], {'highest_tested_offered_tasks_per_s_meeting_slo': 2, 'useful_calls_per_s_per_gpu_at_that_rate': 1.0})
         self.assertEqual(u['by_rule']['worst-itl'], {'highest_tested_offered_tasks_per_s_meeting_slo': 1, 'useful_calls_per_s_per_gpu_at_that_rate': 1.0})
