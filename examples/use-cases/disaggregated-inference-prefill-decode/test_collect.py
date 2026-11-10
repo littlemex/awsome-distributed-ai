@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 from scoring import UNAVAILABLE, client_check, summarize
 
-spec = importlib.util.spec_from_file_location('collect', '5.collect.py')
+spec = importlib.util.spec_from_file_location('collect', Path(__file__).with_name('5.collect.py'))
 collect = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(collect)
 
